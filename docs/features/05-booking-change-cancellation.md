@@ -8,7 +8,7 @@ This replaces a whole journey (direct or connecting) with another itinerary betw
 same cabin. Rules:
 1. The booking is active (CONFIRMED or CHANGED).
 2. The request is made **more than 24 hours** before the journey's first departure.
-3. The new journey departs **no later than 7 days** after the original first departure.
+3. The new journey departs **no later than 60 days** after the original first departure (`CHANGE_WINDOW_DAYS`).
 4. The new journey's connections are valid, and the whole trip still is: the return must still leave after the outbound arrives.
 5. There are enough seats on every flight added. Flights kept in the journey are not re-counted.
 6. Nobody is checked in on the journey. Offload them first with `PUT /api/checkins/{id}`.
@@ -19,18 +19,18 @@ for information only; the sandbox doesn't collect it).
 
 Example errors:
 - *"The journey cannot be changed because departure is within 24 hours."*
-- *"The new journey departs more than 7 days after the original (latest allowed departure …)."*
+- *"The new journey departs more than 60 days after the original (latest allowed departure …)."*
 - *"The return journey must depart after the outbound journey arrives."*
 
 ## Cancellation
-`POST /api/bookings/{id}/cancel` `{"reason": "…"}` (owner or admin) is allowed before the first flight departs. It:
+`POST /api/bookings/{id}/cancel` `{"reason": "…"}` (owner, admin, or `last_name`) is allowed for held or confirmed bookings before the first flight departs. It:
 - sets the status to `CANCELLED`, keeping the booking and PNR;
 - releases seats on every segment;
-- sets the payment to `REFUNDED`;
+- sets a paid payment to `REFUNDED`, or closes an unpaid hold's open payment session;
 - cancels check-ins (`NOT_CHECKED_IN`), tickets and SSRs.
 
 ## Configuration
-`change_cutoff_hours` (24) and `change_window_days` (7) in `config.py`.
+`change_cutoff_hours` (24) and `CHANGE_WINDOW_DAYS` (60).
 
 ## Code
 `booking_service.change_journey`, `booking_service.cancel_booking`.

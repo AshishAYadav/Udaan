@@ -74,9 +74,10 @@ def fares_for_flight(flight_id: str) -> list[dict]:
     ]
 
 
-def fares_by_flight() -> dict[str, list[dict]]:
+def fares_by_flight(flight_ids: set[str]) -> dict[str, list[dict]]:
+    """Read-only fares grouped by flight, for the given flights."""
     grouped: dict[str, list[dict]] = defaultdict(list)
-    for fare in db.fares.all():
+    for fare in db.fares.scan(lambda f: f["flight_id"] in flight_ids):
         grouped[fare["flight_id"]].append(fare)
     return grouped
 

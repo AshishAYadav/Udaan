@@ -19,6 +19,31 @@ route.
 > The rule checks *time*, not *position*: it doesn't require the next departure to leave from the previous arrival
 > airport. That would be the natural next refinement, via tail assignment.
 
+## Automatic schedule generation
+`services/schedule_generator.py` creates **3–4 flights per active route per day**: one in each of the morning
+(06:00–11:45), afternoon (12:00–17:45) and night (18:00–23:30) banks, plus a random extra, at quarter-hour times at
+least 60 minutes apart.
+
+Every generated flight passes the same validation as manual scheduling:
+- the route is active and both airports exist;
+- the departure is in the future;
+- `UD<slot><route no>` is unique that day;
+- an aircraft is free for departure → arrival + ground time.
+
+Wide-bodies (250 seats or more) fly routes of 3,000 km or more, and narrow-bodies fly the rest. A slot with no
+available aircraft is **skipped and reported**, never forced. Results are reproducible with `seed`.
+
+| How | Command |
+|---|---|
+| Seeding | Automatic: `SEED_DAYS` (60) days from tomorrow, `SEED_RANDOM_SEED` |
+| API (admin) | `POST /api/admin/schedules/generate` `{start_date?, days, min_per_route, max_per_route, seed?, route_ids?}` |
+| CLI | `python -m app.seed.generate_schedules --days 60 [--start YYYY-MM-DD] [--seed N]` |
+| UI | Admin → Flights → **Generate schedules** |
+
+The response reports `created`, `skipped` and `skipped_reasons` (for example `"no aircraft available"` or
+`"flight number already operating that day"`), plus `average_flights_per_day`. Running it again over the same dates
+adds nothing, because the flight numbers already exist.
+
 ## Other rules
 - The route must be active, and the departure must be in the future.
 - A departure time without an offset is read as **origin local time**. The arrival is calculated from the route

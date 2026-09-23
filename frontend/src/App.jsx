@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom'
+import { Route, Routes, useLocation } from 'react-router-dom'
 import Footer from './components/Footer'
 import Navbar from './components/Navbar'
 import RequireAuth from './components/RequireAuth'
@@ -8,6 +8,8 @@ import SearchFlights from './pages/SearchFlights'
 import BookFlight from './pages/BookFlight'
 import MyBooking from './pages/MyBooking'
 import CheckIn from './pages/CheckIn'
+import Help from './pages/Help'
+import PaymentPage from './pages/PaymentPage'
 import AdminBookings from './pages/admin/AdminBookings'
 import AdminDashboard from './pages/admin/AdminDashboard'
 import AdminFlights from './pages/admin/AdminFlights'
@@ -15,6 +17,14 @@ import AdminFlights from './pages/admin/AdminFlights'
 const guard = (element, scope) => <RequireAuth scope={scope}>{element}</RequireAuth>
 
 export default function App() {
+  // The hosted payment page is a standalone "gateway" screen without the airline chrome.
+  if (useLocation().pathname.startsWith('/pay/')) {
+    return (
+      <Routes>
+        <Route path="/pay/:sessionId" element={<PaymentPage />} />
+      </Routes>
+    )
+  }
   return (
     <div className="flex min-h-screen flex-col">
       <Navbar />
@@ -27,6 +37,8 @@ export default function App() {
           <Route path="/book" element={<BookFlight />} />
           <Route path="/booking" element={<MyBooking />} />
           <Route path="/checkin" element={<CheckIn />} />
+          <Route path="/help" element={<Help />} />
+          <Route path="/help/:slug" element={<Help />} />
           <Route path="/admin" element={guard(<AdminDashboard />, 'admin')} />
           <Route path="/admin/flights" element={guard(<AdminFlights />, 'flights:write')} />
           <Route path="/admin/bookings" element={guard(<AdminBookings />, 'admin')} />

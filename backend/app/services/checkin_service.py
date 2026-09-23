@@ -1,13 +1,14 @@
-"""Online check-in by PNR + last name.
+"""Online check-in by PNR + last name, per passenger and per flight segment.
 
-Check-in is per journey (through check-in): checking in for the outbound journey
-checks passengers in on every remaining segment of it and issues one ticket /
-boarding pass per passenger per segment. The return journey is checked in
-separately. Check-in opens `checkin_opens_hours` before departure (0 = at any
-time) and closes `checkin_closes_minutes` before departure.
+- Each segment has its own window: it opens `checkin_opens_hours` before departure and closes
+  `checkin_closes_minutes` before departure (defaults 48 h / 4 h). A booking with an outbound
+  and a return flight is therefore checked in separately for each flight.
+- Passengers can be checked in individually. The exception is an adult travelling with an infant
+  on their lap: they check in together with the infant on that flight.
+- Each passenger checked in on a flight gets one ticket / boarding pass for that flight.
 """
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from app.auth.dependencies import Principal, owns
 from app.config import settings
@@ -17,7 +18,6 @@ from app.models.enums import (
     ACTIVE_BOOKING_STATUSES,
     CabinClass,
     CheckinStatus,
-    Direction,
     FlightStatus,
     PassengerType,
     TicketStatus,
@@ -65,88 +65,133 @@ def _checked_in(booking_id: str, flight_id: str) -> set[str]:
     }
 
 
-def _window_error(flight: dict) -> str | None:
+def window(flight: dict) -> tuple[datetime, datetime]:
     departure = parse_dt(flight["departure_time"])
+    return (
+        departure - timedelta(hours=settings.checkin_opens_hours),
+        departure - timedelta(minutes=settings.checkin_closes_minutes),
+    )
+
+
+def _flight_closed_reason(booking: dict, flight: dict) -> str | None:
+    """Why check-in for this booking on this flight is not possible now, or None."""
+    if booking["status"] not in ACTIVE_BOOKING_STATUSES:
+        return f"Booking is {booking['status']}." + (" Complete payment first." if booking["status"] == "PENDING" else "")
+    if flight["status"] == FlightStatus.CANCELLED:
+        return "Flight has been cancelled."
+    opens, closes = window(flight)
     now = utcnow()
-    if settings.checkin_opens_hours and now < departure - timedelta(hours=settings.checkin_opens_hours):
-        return f"Check-in for {flight['flight_number']} opens {settings.checkin_opens_hours} hours before departure."
-    if now > departure - timedelta(minutes=settings.checkin_closes_minutes):
-        return f"Check-in for {flight['flight_number']} closed {settings.checkin_closes_minutes} minutes before departure."
+    if now < opens:
+        return f"Check-in opens {settings.checkin_opens_hours} hours before departure, at {opens.isoformat(timespec='minutes')}."
+    if now > closes:
+        return f"Check-in closed {_duration_text(settings.checkin_closes_minutes)} before departure."
     return None
 
 
-def _journey_plan(booking: dict, direction: Direction | None) -> dict:
-    """Pick the journey to check in and work out which passengers are eligible."""
-    if booking["status"] not in ACTIVE_BOOKING_STATUSES:
-        return {"direction": direction, "flights": [], "eligible": [], "reasons": [f"Booking is {booking['status']}."]}
-
-    directions = [direction] if direction else [Direction.OUTBOUND, Direction.RETURN]
-    fallback = None  # first upcoming journey, reported when nothing is eligible
-    for d in directions:
-        flights = [flight_service.get_flight(fid) for fid in booking_service.journey_ids(booking, d)]
-        remaining = [f for f in flights if not flight_service.has_departed(f) and f["status"] != FlightStatus.DEPARTED]
-        if not flights or (not remaining and not direction):
-            continue
-        reasons: list[str] = []
-        if not remaining:
-            reasons.append("This journey has already departed.")
-        elif any(f["status"] == FlightStatus.CANCELLED for f in remaining):
-            reasons.append("A flight in this journey has been cancelled.")
-        elif error := _window_error(remaining[0]):
-            reasons.append(error)
-        if not reasons:
-            done = {fid: _checked_in(booking["booking_id"], fid) for fid in (f["flight_id"] for f in remaining)}
-            eligible = [pid for pid in booking["passenger_ids"] if any(pid not in ids for ids in done.values())]
-            if len(eligible) < len(booking["passenger_ids"]):
-                reasons.append(f"{len(booking['passenger_ids']) - len(eligible)} passenger(s) already checked in for this journey.")
-            if eligible:
-                return {"direction": d, "flights": remaining, "eligible": eligible, "reasons": reasons}
-        # Nothing to do on this journey: move on to the next one unless a direction was requested.
-        fallback = fallback or {"direction": d, "flights": remaining, "eligible": [], "reasons": reasons}
-    return fallback or {"direction": direction, "flights": [], "eligible": [], "reasons": ["No upcoming journey to check in."]}
+def _duration_text(minutes: int) -> str:
+    return f"{minutes // 60} hours" if minutes % 60 == 0 else f"{minutes} minutes"
 
 
-def validate(pnr: str, last_name: str, direction: Direction | None = None) -> dict:
+def _segments_status(booking: dict) -> list[dict]:
+    pairs = booking_service.infant_pairs(booking)
+    lap_adults = {adult: infant for infant, adult in pairs.items()}
+    result = []
+    for segment in booking["segments"]:
+        flight = flight_service.get_flight(segment["flight_id"])
+        closed = _flight_closed_reason(booking, flight)
+        done = _checked_in(booking["booking_id"], flight["flight_id"])
+        opens, closes = window(flight)
+        passengers = []
+        for pid in booking["passenger_ids"]:
+            reason = "Already checked in." if pid in done else closed
+            passengers.append(
+                {
+                    "passenger_id": pid,
+                    "checked_in": pid in done,
+                    "eligible": reason is None,
+                    "reason": reason,
+                    "travels_with": pairs.get(pid) or lap_adults.get(pid),
+                }
+            )
+        result.append(
+            {
+                "segment_no": segment["segment_no"],
+                "direction": segment["direction"],
+                "flight_id": flight["flight_id"],
+                "flight_number": flight["flight_number"],
+                "phase": flight_service.phase(flight),
+                "checkin_opens_at": opens,
+                "checkin_closes_at": closes,
+                "open": closed is None,
+                "reason": closed,
+                "passengers": passengers,
+            }
+        )
+    return result
+
+
+def validate(pnr: str, last_name: str) -> dict:
     booking = booking_service.find_by_pnr(pnr, last_name)
-    plan = _journey_plan(booking, direction)
+    segments = _segments_status(booking)
+    eligible = any(p["eligible"] for s in segments for p in s["passengers"])
+    reasons = sorted({s["reason"] for s in segments if s["reason"]})
     return {
         "booking": booking_service.build_view(booking),
-        "direction": plan["direction"],
-        "flight_ids": [f["flight_id"] for f in plan["flights"]],
-        "can_check_in": bool(plan["eligible"]),
-        "eligible_passenger_ids": plan["eligible"],
-        "reasons": plan["reasons"],
+        "segments": segments,
+        "can_check_in": eligible,
+        "reasons": reasons,
     }
 
 
+def _ensure_infant_pairs(booking: dict, flight: dict, selected: set[str], done: set[str]) -> None:
+    """An infant and the adult whose lap they travel on check in together on each flight."""
+    for infant, adult in booking_service.infant_pairs(booking).items():
+        if infant in selected and adult not in selected | done:
+            raise BadRequestError(f"Infant {infant} must be checked in together with adult {adult} on {flight['flight_number']}.")
+        if adult in selected and infant not in selected | done:
+            raise BadRequestError(f"Adult {adult} travels with infant {infant}; check them in together on {flight['flight_number']}.")
+
+
 def check_in(data) -> dict:
-    """Check passengers in on every remaining segment of a journey and issue boarding passes."""
+    """Check in the selected passengers on the selected flights and issue boarding passes.
+
+    Defaults: every flight whose check-in window is open, and every passenger not yet checked in on it.
+    """
     booking = booking_service.find_by_pnr(data.pnr, data.last_name)
+    segments = {s["flight_id"]: s for s in _segments_status(booking)}
+    requested_flights = data.flight_ids or [fid for fid, s in segments.items() if s["open"]]
+    if not requested_flights:
+        raise ConflictError(" ".join(sorted({s["reason"] for s in segments.values() if s["reason"]})) or "No flight is open for check-in.")
+
+    checkins = []
     with transaction():
-        plan = _journey_plan(booking, data.direction)
-        requested = data.passenger_ids or plan["eligible"]
-        if not requested:
-            raise ConflictError(" ".join(plan["reasons"]) or "No passengers are eligible for check-in.")
-        for pid in requested:
-            if pid not in booking["passenger_ids"]:
-                raise BadRequestError(f"Passenger {pid} is not on booking {booking['pnr']}.")
-            if pid not in plan["eligible"]:
-                raise ConflictError(f"Passenger {pid} is already checked in or not eligible. {' '.join(plan['reasons'])}".strip())
+        for fid in requested_flights:
+            segment = segments.get(fid)
+            if not segment:
+                raise BadRequestError(f"Flight {fid} is not part of booking {booking['pnr']}.")
+            if not segment["open"]:
+                raise ConflictError(f"{segment['flight_number']}: {segment['reason']}")
+            flight = flight_service.get_flight(fid)
+            done = _checked_in(booking["booking_id"], fid)
+            selected = set(data.passenger_ids or [pid for pid in booking["passenger_ids"] if pid not in done])
+            unknown = selected - set(booking["passenger_ids"])
+            if unknown:
+                raise BadRequestError(f"Passenger(s) {', '.join(sorted(unknown))} are not on booking {booking['pnr']}.")
+            already = selected & done
+            if already and data.passenger_ids:
+                raise ConflictError(f"Passenger(s) {', '.join(sorted(already))} already checked in on {flight['flight_number']}.")
+            selected -= done
+            if not selected:
+                continue
+            _ensure_infant_pairs(booking, flight, selected, done)
 
-        passengers = {pid: db.passengers.get(pid) for pid in requested}
-        seated = [pid for pid in requested if passengers[pid]["passenger_type"] != PassengerType.INFANT]
-        infants = [pid for pid in requested if pid not in seated]
-
-        checkins = []
-        for flight in plan["flights"]:
-            already = _checked_in(booking["booking_id"], flight["flight_id"])
-            if infants and not seated and not already:
-                raise BadRequestError("Infants must be checked in together with, or after, an accompanying adult.")
-            taken = _occupied_seats(flight["flight_id"])
-            sequence = len(db.checkins.find(flight_id=flight["flight_id"]))
+            passengers = {pid: db.passengers.get(pid) for pid in selected}
+            ordered = [pid for pid in booking["passenger_ids"] if pid in selected]
+            seated = [pid for pid in ordered if passengers[pid]["passenger_type"] != PassengerType.INFANT]
+            infants = [pid for pid in ordered if pid not in seated]
+            taken = _occupied_seats(fid)
+            sequence = len(db.checkins.find(flight_id=fid))
             for pid in seated + infants:
-                if pid in already:
-                    continue
                 if pid in infants:
                     seat = INFANT_SEAT
                 else:
@@ -158,7 +203,7 @@ def check_in(data) -> dict:
                     "booking_id": booking["booking_id"],
                     "pnr": booking["pnr"],
                     "passenger_id": pid,
-                    "flight_id": flight["flight_id"],
+                    "flight_id": fid,
                     "class_id": booking["class_id"],
                     "seat": seat,
                     "sequence_number": sequence,
@@ -170,11 +215,12 @@ def check_in(data) -> dict:
                 db.checkins.insert(checkin)
                 ticket = ticket_service.issue_ticket(checkin["checkin_id"])
                 checkins.append({**checkin, "ticket_id": ticket["ticket_id"]})
+    if not checkins:
+        raise ConflictError("The selected passengers are already checked in on the selected flights.")
 
     return {
         "booking_id": booking["booking_id"],
         "pnr": booking["pnr"],
-        "direction": plan["direction"],
         "checkins": checkins,
         "boarding_passes": [ticket_service.boarding_pass(c["ticket_id"]) for c in checkins],
     }

@@ -7,17 +7,21 @@ It covers:
 - guest checkout (no account needed) and member accounts with tier benefits;
 - one-way and round-trip search with one-stop connections and adult / child / infant fares;
 - multi-segment bookings with PNRs, retrieved by PNR or booking ID plus last name;
-- mock payments;
+- seat holds and a hosted payment page (payment links) with sandbox test cards, local currencies and signed webhooks;
+- baggage allowances by route, cabin and passenger type;
 - journey changes and cancellation;
 - tier-based special service requests (SSRs);
-- through check-in with boarding passes;
-- flight schedule and booking administration (list, cancel, delete) with realistic aircraft rotation.
+- per-flight, per-passenger check-in with live flight phases and boarding passes;
+- about 4,600 generated flights (22 routes × 3–4 a day × 60 days) with realistic aircraft rotation, plus booking and webhook administration.
 
 > This is a sandbox. Payments, PNRs and tickets are simulated and are not real airline records.
 
 ## Documentation
 - [docs/features/](docs/features/README.md) — one document per feature (rules, API, UI, configuration)
 - [docs/API.md](docs/API.md) — endpoint reference and the end-to-end flow with curl
+- [docs/design/use-cases.md](docs/design/use-cases.md) · [docs/design/conventions.md](docs/design/conventions.md) — the use cases and conventions behind the design
+- [docs/policies/](docs/policies/README.md) — customer policies: the Help page content, ready for RAG
+- [docs/integration/payment-links-and-agents.md](docs/integration/payment-links-and-agents.md) — payment links and webhooks for MCP/LLM agents
 - Swagger: <http://localhost:8000/docs> · ReDoc: <http://localhost:8000/redoc>
 
 ## Architecture
@@ -32,13 +36,13 @@ backend/app
 ├── schemas/         Pydantic request/response models
 ├── models/enums.py  Status, role and type enumerations
 ├── db/database.py   Central TinyDB access: repositories, locking, ID counters
-├── seed/            Deterministic seed data, timetable and seeder
+├── seed/            Seed data, seeder and generate_schedules CLI
 └── utils/           Errors, time helpers, ID/PNR generation
 frontend/src
 ├── services/api.js  API service layer (bearer token, error handling)
 ├── hooks/           useAuth (token + scopes), useAsync (loading/error)
 ├── components/      BookingView, ItineraryCard, BoardingPass, FlightForm, RequireAuth, …
-└── pages/           Login, Search, Book, My Booking, Check-in, Admin
+└── pages/           Login, Search, Book, PaymentPage (UdaanPay), Manage booking, Check-in, Help, Admin
 data/airline.json    TinyDB database (created on first start)
 ```
 
@@ -86,24 +90,27 @@ listed only on the staff sign-in page, `/admin/login`.
 New members start in the Bronze tier.
 
 ## Try it (UI)
-1. On the home page, choose **Round trip**, DEL → LHR on an **even** date returning on an odd date, and 2 adults +
-   1 child → **Search flights**. You don't need to log in.
-2. Pick the one-stop itineraries via DXB → **Continue**.
-3. Add passengers → Review → choose **Approve** → **Complete payment** → the PNR is shown.
-4. **Check-in** → PNR + last name → confirm. You get boarding passes for both outbound segments → **Print**.
-   Check in again later for the return journey.
-5. **Staff sign in** (footer link, `admin` / `admin`) → Admin → **Manage flights** or **Manage bookings** (list, view, cancel, delete).
+1. On the home page choose **Round trip**, for example DEL → LHR, with 2 adults and 1 infant → **Search flights**.
+   You don't need to log in, and prices appear in your local currency (change it in the top bar).
+2. Pick an outbound and a return itinerary → **Continue**. The baggage allowance is shown on every option.
+3. Fill in the passengers → Review → **Continue to secure payment**. Your seats are held for 30 minutes and you land
+   on the **UdaanPay** page.
+4. Pay with a test card, for example `4111 1111 1111 1111`, expiry `12/30`, CVV `123`. The list is on the page.
+   You are sent back to Manage booking with the booking confirmed.
+5. **Check-in** (for flights within 48 h): enter the PNR and last name, then tick passengers per flight. An adult and
+   their infant go together. Print the boarding passes.
+6. **Help** has the baggage, check-in, fares, payments and change policies.
+7. **Staff sign in** (footer, `admin` / `admin`) → Admin → Flights (including **Generate schedules**) or Bookings.
 
 ## Key business rules
-- **Guests** book, manage and check in with the PNR + last name. A payment is secured by its access key. SSRs need a member account.
-- **Retrieval:** PNR + last name, or booking ID + last name. Only the owner or an admin can skip the last name.
-- **Connections:** at least 60 min domestic / 90 min international between flights, and at most 4 h domestic /
-  24 h international (a longer gap is a stopover). A round trip is one booking and one PNR.
-- **Aircraft rotation:** an aircraft is busy from departure until arrival plus 4 h (domestic) or 8 h (international).
-- **Changes:** more than 24 h before departure, to a journey departing within 7 days of the original.
-- **Tickets** are issued only at check-in, one per passenger per segment.
-- **Security:** each endpoint needs a scope, and customers only reach their own records. SSR write scopes are granted
-  per tier, so an ineligible user's token cannot create that service.
+- **Booking:** book from tomorrow up to 60 days ahead. Seats are held for 30 minutes until paid; holds that aren't paid expire and release their seats.
+- **Guests** book, pay, manage and check in with the PNR + last name. SSRs need a member account.
+- **Connections:** at least 60 min domestic / 90 min international between flights, and at most 4 h domestic / 24 h international.
+- **Fares:** child 75%, infant 10% (on lap, one per adult). Baggage: domestic Economy 1 × 15 kg checked + 7 kg cabin + a personal item; infants 5 kg cabin only.
+- **Check-in:** opens 48 h and closes 4 h before each flight. Boarding runs from 60 min, and the gate closes at 30 min.
+- **Changes:** more than 24 h before departure, to a journey departing within 60 days of the original.
+- **Aircraft rotation:** an aircraft is busy until arrival plus 4 h (domestic) or 8 h (international).
+- **Security:** a scope per endpoint, and customers only reach their own records. SSR scopes are granted per tier.
 
 ## Configuration (`.env`)
 
@@ -115,4 +122,9 @@ New members start in the Bronze tier.
 | `JWT_SECRET` | dev value | JWT signing secret |
 | `ACCESS_TOKEN_MINUTES` | `60` | Token lifetime |
 | `MIN_CONNECTION_*`, `MAX_CONNECTION_*` | 60 / 90 min, 4 / 24 h | Connection rules |
-| `CHECKIN_OPENS_HOURS` / `CHECKIN_CLOSES_MINUTES` | `0` (always open) / `60` | Check-in window |
+| `CHECKIN_OPENS_HOURS` / `CHECKIN_CLOSES_MINUTES` | `48` / `240` | Check-in window |
+| `BOARDING_OPENS_MINUTES` / `BOARDING_CLOSES_MINUTES` | `60` / `30` | Boarding and gate-close times |
+| `BOOKING_HOLD_MINUTES` | `30` | Unpaid seat hold |
+| `CHANGE_WINDOW_DAYS` | `60` | Latest new departure after a change |
+| `PUBLIC_UI_URL` | `http://localhost:5173` | Base of hosted payment links |
+| `SEED_RANDOM_SEED` | `2026` | Reproducible generated schedules |

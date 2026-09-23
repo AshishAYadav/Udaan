@@ -14,17 +14,16 @@ from app.models.enums import (
     TicketStatus,
     TripType,
 )
+from app.schemas.baggage import BaggageAllowance
 from app.schemas.flight import FlightSummary
-from app.schemas.payment import TripSelection
+from app.schemas.payment import CheckoutOptions, PaymentCard, PaymentSessionSummary, TripSelection
 from app.schemas.ssr import SSR
 
 
-class BookingCreate(TripSelection):
+class BookingCreate(TripSelection, CheckoutOptions):
     user_id: str | None = Field(default=None, description="Admins only: book on behalf of this user")
     class_id: CabinClass = CabinClass.ECONOMY
     passenger_ids: list[str] = Field(min_length=1, examples=[["PAX001"]])
-    payment_id: str = Field(description="A COMPLETED payment created for exactly these flights, cabin and passengers")
-    payment_key: str | None = Field(default=None, description="Guests: the payment's access_key (not needed when logged in)")
     contact_email: str | None = None
     contact_phone: str | None = None
 
@@ -57,9 +56,11 @@ class Booking(BaseModel):
     segments: list[Segment]
     class_id: CabinClass
     passenger_ids: list[str]
-    payment_id: str
-    total_amount: float
+    payment_id: str | None
+    total_amount: float = Field(description="Price in the booking currency")
     currency: str
+    base_amount: float = Field(description="Price in the base currency (USD)")
+    hold_expires_at: datetime | None = Field(default=None, description="Unpaid hold expiry (PENDING only)")
     status: BookingStatus
     contact_email: str | None = None
     contact_phone: str | None = None
@@ -75,6 +76,8 @@ class BookingPassenger(BaseModel):
     date_of_birth: date
     gender: Gender
     passenger_type: PassengerType
+    infant_on_lap_of: str | None = Field(default=None, description="For infants: the adult they travel with")
+    baggage: dict[Direction, BaggageAllowance] = Field(description="Allowance per journey")
 
 
 class SegmentPassenger(BaseModel):
@@ -97,6 +100,8 @@ class PaymentBrief(BaseModel):
     status: PaymentStatus
     amount: float
     currency: str
+    card: PaymentCard | None = None
+    payment_url: str | None = Field(default=None, description="Hosted payment page while the booking awaits payment")
 
 
 class BookingView(BaseModel):
@@ -111,13 +116,23 @@ class BookingView(BaseModel):
     cabin_name: str
     total_amount: float
     currency: str
+    base_amount: float
+    base_currency: str
+    hold_expires_at: datetime | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
     created_at: datetime
     segments: list[SegmentView]
     passengers: list[BookingPassenger]
-    payment: PaymentBrief
+    payment: PaymentBrief | None
     ssrs: list[SSR]
+
+
+class BookingHold(BaseModel):
+    """A held booking (status PENDING) and the payment session that will confirm it."""
+
+    booking: BookingView
+    payment: PaymentSessionSummary
 
 
 class BookingHistoryEntry(BaseModel):
@@ -132,5 +147,5 @@ class BookingChangeResult(BaseModel):
     booking: BookingView
     direction: Direction
     previous_flight_ids: list[str]
-    fare_difference: float = Field(description="New fare minus old fare (informational in the sandbox)")
+    fare_difference: float = Field(description="New fare minus old fare, in the base currency (informational)")
     currency: str

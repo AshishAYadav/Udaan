@@ -12,6 +12,12 @@ const COLORS = {
   REJECTED: 'bg-red-100 text-red-800',
   FAILED: 'bg-red-100 text-red-800',
   REFUNDED: 'bg-slate-200 text-slate-700',
+  EXPIRED: 'bg-slate-200 text-slate-700',
+  CHECKIN_OPEN: 'bg-green-100 text-green-800',
+  CHECKIN_CLOSED: 'bg-amber-100 text-amber-800',
+  BOARDING: 'bg-blue-600 text-white',
+  GATE_CLOSED: 'bg-red-100 text-red-800',
+  ARRIVED: 'bg-slate-200 text-slate-700',
   DEPARTED: 'bg-slate-200 text-slate-700',
 }
 

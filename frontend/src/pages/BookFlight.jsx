@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import Alert from '../components/Alert'
-import BookingView from '../components/BookingView'
 import Spinner from '../components/Spinner'
 import useAsync from '../hooks/useAsync'
 import { useAuth } from '../hooks/useAuth'
-import { bookingService, flightService, passengerService, paymentService } from '../services/api'
-import { duration, localDateTime, money, titleCase } from '../utils/format'
+import { useCurrency } from '../hooks/useCurrency'
+import { bookingService, flightService, passengerService } from '../services/api'
+import { duration, localDateTime, titleCase } from '../utils/format'
 
-const STEPS = ['Itinerary', 'Passengers', 'Review', 'Payment', 'Confirmation']
+// The last step happens on the hosted payment page; it is shown here so the journey is clear.
+const STEPS = ['Itinerary', 'Passengers', 'Review', 'Payment']
 const emptyPassenger = (type = 'ADULT') => ({ first_name: '', last_name: '', date_of_birth: '', gender: 'M', passenger_type: type })
 const ids = (value) => (value ? value.split(',').filter(Boolean) : [])
 const TYPE_LABEL = { ADULT: 'Adult (12+)', CHILD: 'Child (2–11)', INFANT: 'Infant (under 2)' }
@@ -27,6 +28,7 @@ const initialPassengers = (params) => {
 export default function BookFlight() {
   const [params] = useSearchParams()
   const { user } = useAuth()
+  const { currency, price } = useCurrency()
   const selection = useMemo(
     () => ({ outbound: ids(params.get('out')), return: ids(params.get('ret')), classId: params.get('class') || 'ECONOMY' }),
     [params],
@@ -36,10 +38,6 @@ export default function BookFlight() {
   const [fares, setFares] = useState({})
   const [passengers, setPassengers] = useState(() => initialPassengers(params))
   const [contactEmail, setContactEmail] = useState('')
-  const [passengerIds, setPassengerIds] = useState([])
-  const [payment, setPayment] = useState(null)
-  const [decision, setDecision] = useState('APPROVE')
-  const [booking, setBooking] = useState(null)
   const { loading, error, setError, run } = useAsync()
 
   const allIds = [...selection.outbound, ...selection.return]
@@ -55,36 +53,25 @@ export default function BookFlight() {
   const goTo = (next) => { setError(''); setStep(next) }
   const updatePassenger = (index, field, value) =>
     setPassengers(passengers.map((p, i) => (i === index ? { ...p, [field]: value } : p)))
-  const tripPayload = (extra) => ({
-    outbound_flight_ids: selection.outbound, return_flight_ids: selection.return, class_id: selection.classId, ...extra,
-  })
 
-  // Review → Payment: persist passengers, then open a PENDING payment priced by the server.
+  // Review → hold the booking (PNR + seats) and continue on the hosted payment page.
   const proceedToPayment = () =>
     run(async () => {
       const created = []
       for (const p of passengers) created.push(await passengerService.create(p))
-      const newIds = created.map((p) => p.passenger_id)
-      setPassengerIds(newIds)
-      setPayment(await paymentService.create(tripPayload({ passenger_ids: newIds })))
-      goTo(3)
-    })
-
-  const retryPayment = () => run(async () => setPayment(await paymentService.create(tripPayload({ passenger_ids: passengerIds }))))
-
-  const completePayment = () =>
-    run(async () => {
-      await paymentService.decide(payment.payment_id, decision, payment.access_key)
-      const completed = await paymentService.complete(payment.payment_id, payment.access_key)
-      setPayment(completed)
-      if (completed.status !== 'COMPLETED') {
-        throw new Error('Unable to complete booking. Payment was rejected. Your seats have not been reserved.')
-      }
-      setBooking(await bookingService.create(tripPayload({
-        passenger_ids: passengerIds, payment_id: completed.payment_id, payment_key: payment.access_key,
+      const lastName = encodeURIComponent(passengers[0].last_name)
+      const origin = window.location.origin
+      const hold = await bookingService.create({
+        outbound_flight_ids: selection.outbound,
+        return_flight_ids: selection.return,
+        class_id: selection.classId,
+        passenger_ids: created.map((p) => p.passenger_id),
         contact_email: contactEmail || null,
-      })))
-      goTo(4)
+        currency,
+        success_url: `${origin}/booking?last_name=${lastName}&paid=1`,
+        cancel_url: `${origin}/booking?last_name=${lastName}`,
+      })
+      window.location.assign(`/pay/${hold.payment.session_id}`)
     })
 
   if (!selection.outbound.length) return <Alert>No flights selected. <Link className="underline" to="/search">Search flights</Link></Alert>
@@ -94,13 +81,11 @@ export default function BookFlight() {
   const fareFor = (field) => allIds.reduce((sum, id) => sum + (fares[id]?.[field] || 0), 0)
   const typeFare = { ADULT: fareFor('base_price'), CHILD: fareFor('child_price'), INFANT: fareFor('infant_price') }
   const estimate = passengers.reduce((sum, p) => sum + typeFare[p.passenger_type], 0)
-  const lastName = booking?.passengers[0]?.last_name || ''
-  const pnrQuery = booking ? `?pnr=${booking.pnr}&last_name=${encodeURIComponent(lastName)}` : ''
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Book your trip</h1>
-      <Stepper current={step} />
+      <Stepper current={step} onSelect={goTo} />
       <Alert>{error}</Alert>
 
       {step === 0 && (
@@ -109,9 +94,9 @@ export default function BookFlight() {
           {selection.return.length > 0 && <Journey title="Return" ids={selection.return} flights={flights} />}
           <div className="flex items-center justify-between border-t border-slate-100 pt-4">
             <div className="text-sm">
-              <p>{titleCase(selection.classId)} · {passengers.length} passenger(s) · total <span className="text-lg font-bold">{money(estimate)}</span></p>
+              <p>{titleCase(selection.classId)} · {passengers.length} passenger(s) · total <span className="text-lg font-bold">{price(estimate)}</span></p>
               <p className="text-xs text-slate-500">
-                Per passenger: Adult {money(typeFare.ADULT)} · Child {money(typeFare.CHILD)} · Infant (on lap) {money(typeFare.INFANT)}
+                Per passenger: Adult {price(typeFare.ADULT)} · Child {price(typeFare.CHILD)} · Infant (on lap) {price(typeFare.INFANT)}
               </p>
             </div>
             <button className="btn-primary" disabled={missingCabin} onClick={() => goTo(1)}>Continue</button>
@@ -129,7 +114,7 @@ export default function BookFlight() {
                 <select className="input" value={p.passenger_type} onChange={(e) => updatePassenger(i, 'passenger_type', e.target.value)}>
                   {Object.entries(TYPE_LABEL).map(([type, label]) => <option key={type} value={type}>{label}</option>)}
                 </select>
-                <p className="mt-1 text-xs text-slate-500">{money(typeFare[p.passenger_type])}</p>
+                <p className="mt-1 text-xs text-slate-500">{price(typeFare[p.passenger_type])}</p>
               </div>
               <div>
                 <label className="label">First name</label>
@@ -176,7 +161,7 @@ export default function BookFlight() {
             {passengers.map((p, i) => (
               <li key={i} className="flex justify-between px-4 py-2 text-sm">
                 <span className="font-medium">{p.first_name} {p.last_name}</span>
-                <span className="text-slate-500">{titleCase(p.passenger_type)} · {p.date_of_birth} · {money(typeFare[p.passenger_type])}</span>
+                <span className="text-slate-500">{titleCase(p.passenger_type)} · {p.date_of_birth} · {price(typeFare[p.passenger_type])}</span>
               </li>
             ))}
           </ul>
@@ -196,55 +181,15 @@ export default function BookFlight() {
               <input type="email" className="input" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} />
             </div>
           </div>
-          <div className="flex justify-end gap-2">
-            <button className="btn-secondary" onClick={() => goTo(1)}>Back</button>
-            <button className="btn-primary" disabled={loading} onClick={proceedToPayment}>
-              {loading ? 'Preparing…' : 'Continue to payment'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === 3 && payment && (
-        <div className="card max-w-lg space-y-4">
-          <div>
-            <p className="label">Payment amount</p>
-            <p className="text-3xl font-bold">{money(payment.amount, payment.currency)}</p>
-            <ul className="mt-1 text-sm text-slate-500">
-              {Object.entries(payment.breakdown.reduce((acc, line) => ({ ...acc, [line.passenger_type]: (acc[line.passenger_type] || 0) + line.amount }), {}))
-                .map(([type, amount]) => <li key={type}>{titleCase(type)} fares: {money(amount, payment.currency)}</li>)}
-            </ul>
-            <p className="text-xs text-slate-400">{passengerIds.length} passenger(s) × {allIds.length} flight(s)</p>
-          </div>
-          <Alert type="info">Mock payment gateway — no card details are needed.</Alert>
-          {payment.status === 'PENDING' ? (
-            <>
-              <fieldset className="space-y-2">
-                <legend className="label">Payment result</legend>
-                {['APPROVE', 'REJECT'].map((option) => (
-                  <label key={option} className="flex items-center gap-2 text-sm">
-                    <input type="radio" name="decision" checked={decision === option} onChange={() => setDecision(option)} />
-                    {titleCase(option)}
-                  </label>
-                ))}
-              </fieldset>
-              <button className="btn-primary w-full" disabled={loading} onClick={completePayment}>
-                {loading ? 'Processing…' : 'Complete payment'}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+            <p className="text-sm">Total <span className="text-xl font-bold">{price(estimate)}</span>
+              <span className="ml-2 text-xs text-slate-500">Seats are held for 30 minutes while you pay.</span></p>
+            <div className="flex gap-2">
+              <button className="btn-secondary" onClick={() => goTo(1)}>Back</button>
+              <button className="btn-primary" disabled={loading} onClick={proceedToPayment}>
+                {loading ? 'Holding your seats…' : '🔒 Continue to secure payment'}
               </button>
-            </>
-          ) : (
-            <button className="btn-secondary w-full" disabled={loading} onClick={retryPayment}>Try payment again</button>
-          )}
-        </div>
-      )}
-
-      {step === 4 && booking && (
-        <div className="space-y-4">
-          <Alert type="success">Payment approved — your booking is confirmed.</Alert>
-          <BookingView booking={booking} />
-          <div className="flex gap-2">
-            <Link className="btn-secondary" to={`/booking${pnrQuery}`}>View booking</Link>
-            <Link className="btn-primary" to={`/checkin${pnrQuery}`}>Check in</Link>
+            </div>
           </div>
         </div>
       )}
@@ -273,14 +218,22 @@ function Journey({ title, ids: flightIds, flights }) {
   )
 }
 
-function Stepper({ current }) {
+// Completed steps are clickable so the traveller can go back and edit.
+function Stepper({ current, onSelect }) {
   return (
     <ol className="flex flex-wrap gap-2 text-sm">
-      {STEPS.map((label, i) => (
-        <li key={label} className={`rounded-full px-3 py-1 ${i === current ? 'bg-blue-600 text-white' : i < current ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-500'}`}>
-          {i + 1}. {label}
-        </li>
-      ))}
+      {STEPS.map((label, i) => {
+        const done = i < current
+        const style = i === current ? 'bg-blue-600 text-white' : done ? 'bg-blue-100 text-blue-800 hover:bg-blue-200' : 'bg-slate-100 text-slate-500'
+        return (
+          <li key={label}>
+            <button type="button" disabled={!done} onClick={() => onSelect(i)}
+              className={`rounded-full px-3 py-1 ${style} ${done ? 'cursor-pointer' : 'cursor-default'}`}>
+              {done ? '✓' : i + 1}. {label}
+            </button>
+          </li>
+        )
+      })}
     </ol>
   )
 }

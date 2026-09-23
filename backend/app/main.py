@@ -1,5 +1,6 @@
 """Udaan Airlines sandbox — FastAPI application entry point."""
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,12 +13,15 @@ from app.api import (
     auth,
     bookings,
     checkins,
+    checkout,
     classes,
+    currencies,
     fares,
     flights,
     itineraries,
     passengers,
     payments,
+    policies,
     routes,
     ssrs,
     tickets,
@@ -27,6 +31,7 @@ from app.api import (
 from app.config import settings
 from app.db.database import close_db
 from app.seed.seeder import init_database
+from app.services import booking_service
 from app.utils.errors import DomainError
 
 DESCRIPTION = """
@@ -35,17 +40,18 @@ Sandbox airline booking and servicing API for **Udaan Airlines** (prototype — 
 ### Authentication
 OAuth2 **password flow** issuing signed **JWT** bearer tokens (click **Authorize**). Each endpoint lists the scope it
 needs. Customers only get `ssr:<TYPE>` scopes for the services their tier allows. Reference data, search, and the
-booking, payment, PNR and check-in flow are also open to **guests** without a token. A guest's payment is secured by
-its `access_key`, and a guest's booking by the PNR plus a passenger's last name.
+booking, hosted payment, PNR and check-in flow are also open to **guests** without a token. The payment
+page is secured by its secret session URL, and a booking by the PNR plus a passenger's last name.
 
 ### Booking flow
-1. `GET /api/itineraries/search` — one-way or round trip, direct or one-stop
+1. `GET /api/itineraries/search` — one-way or round trip, direct or one-stop, fares and baggage by passenger type
 2. `POST /api/passengers` — create each passenger
-3. `POST /api/payments` — create a PENDING payment for the chosen flights (amount computed by the server)
-4. `PUT /api/payments/{id}` with `{"action": "APPROVE"}` (or `REJECT`), then `POST /api/payments/{id}/complete`
-5. `POST /api/bookings` — confirm the booking and receive a **PNR**
-6. `GET /api/bookings/pnr/{pnr}?last_name=...` — retrieve the itinerary (PNR + last name)
-7. `POST /api/checkins/validate`, then `POST /api/checkins` — through check-in; one ticket per passenger per segment
+3. `POST /api/bookings` — **hold** seats, get the **PNR** and a hosted `payment_url` (booking status PENDING)
+4. Payer opens `payment_url` (UI `/pay/{session_id}`), or call `POST /api/payment-sessions/{session_id}/pay` with a test card
+   → booking **CONFIRMED**; webhooks `payment.succeeded` + `booking.confirmed` go to subscribed endpoints
+5. `GET /api/bookings/pnr/{pnr}?last_name=...` — retrieve the itinerary
+6. (optional) `POST /api/bookings/{id}/payment-session` — a new payment link for a held booking
+7. `POST /api/checkins/validate`, then `POST /api/checkins` — per passenger, per flight, inside the check-in window
 8. `GET /api/tickets/{ticket_id}` — boarding pass
 
 Errors are returned as `{"detail": "..."}`. The status codes are: 400 business rule, 401 not authenticated, 403 missing
@@ -58,7 +64,10 @@ TAGS = [
     {"name": "Flights", "description": "Search, schedules and schedule administration"},
     {"name": "Fares", "description": "Flight fares and SSR pricing"},
     {"name": "Passengers", "description": "Adult / child / infant passenger records"},
-    {"name": "Payments", "description": "Mock payment gateway with approve / reject"},
+    {"name": "Payments", "description": "Payment sessions and attempts"},
+    {"name": "Checkout (hosted payment page)", "description": "Public endpoints behind the hosted payment URL"},
+    {"name": "Currencies", "description": "Point-of-sale currencies and detection"},
+    {"name": "Policies & help", "description": "Policy documents and baggage allowances"},
     {"name": "Bookings", "description": "Bookings, PNR lookup, change and cancellation"},
     {"name": "Check-in", "description": "PNR + last name check-in and ticket issuance"},
     {"name": "Tickets", "description": "Tickets and boarding passes (issued only after check-in)"},
@@ -73,10 +82,20 @@ TAGS = [
 ]
 
 
+async def _expire_holds_periodically() -> None:
+    while True:
+        await asyncio.sleep(60)
+        await asyncio.to_thread(booking_service.expire_holds)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_database()
+    task = asyncio.create_task(_expire_holds_periodically())
     yield
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
     close_db()
 
 
@@ -102,7 +121,7 @@ async def domain_error_handler(_: Request, exc: DomainError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
-for module in (auth, itineraries, flights, fares, passengers, payments, bookings, checkins, tickets, ssrs,
+for module in (auth, itineraries, flights, fares, checkout, currencies, policies, passengers, payments, bookings, checkins, tickets, ssrs,
                routes, airports, classes, aircrafts, users, tiers, admin):
     app.include_router(module.router, prefix="/api")
 

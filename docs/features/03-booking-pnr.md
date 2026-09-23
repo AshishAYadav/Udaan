@@ -5,20 +5,23 @@ Confirm a one-way or round-trip reservation against a completed payment, reserve
 unique **PNR**. Retrieve itineraries the way airlines do, with the PNR (or booking ID) and a passenger's last name.
 
 ## Booking rules
-To confirm a booking, all of the following must hold:
+Creating a booking (`POST /api/bookings`) **holds** it. All of the following must hold:
 - the booker is valid: guests book without an account (`user_id = null`), customers always book for themselves, and admins may pass `user_id`;
 - every flight is bookable (SCHEDULED or DELAYED, not departed), and the connections and trip order are valid (see [02](02-flight-search-itineraries.md));
 - the cabin exists on every segment with enough seats; infants don't take a seat;
-- the party is valid (see [06](06-passengers.md)), and every passenger belongs to the booking user or is a new, never-booked guest passenger;
-- no passenger is already on an active booking for any of the same flights;
-- there is a **COMPLETED** payment, not yet used, for exactly the same user, outbound and return flights, cabin and
-  passengers, and its amount still equals the current price (see [04](04-payments.md)).
+- the party is valid (see [06](06-passengers.md)), and every passenger belongs to the booking user or is a guest passenger not on another live booking;
+- no passenger is already on a held or active booking for any of the same flights.
 
-On success: seats are taken on each segment, a 6-character PNR is generated (it never uses `0 O 1 I`, and is
-unique), the payment is linked, and the history records `CREATED`. **No ticket is issued yet**; tickets are issued at
-check-in.
+On success:
+- seats are reserved on every segment;
+- a 6-character PNR is generated (it never uses `0 O 1 I`, and is unique);
+- the booking is **PENDING** with `hold_expires_at` 30 minutes later;
+- a hosted payment session is opened (see [04](04-payments.md)).
 
-Statuses: `CONFIRMED` → `CHANGED` (after a journey change) → `CANCELLED`. `PENDING` is reserved.
+Paying confirms the booking. **No ticket is issued yet**; tickets are issued at check-in.
+
+Statuses: `PENDING` (held) → `CONFIRMED` → `CHANGED` (after a journey change). A booking can also end as `CANCELLED`
+or `EXPIRED` (hold lapsed; seats released).
 
 ## Data model
 ```json
@@ -31,7 +34,8 @@ Statuses: `CONFIRMED` → `CHANGED` (after a journey change) → `CANCELLED`. `P
     {"segment_no": 4, "flight_id": "FLT025", "direction": "RETURN"}
   ],
   "class_id": "ECONOMY", "passenger_ids": ["PAX001", "PAX002"], "payment_id": "PAY001",
-  "total_amount": 2345.0, "currency": "USD", "status": "CONFIRMED"
+  "base_amount": 2345.0, "total_amount": 195807.5, "currency": "INR",
+  "status": "CONFIRMED", "hold_expires_at": null
 }
 ```
 

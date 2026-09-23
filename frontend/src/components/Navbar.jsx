@@ -1,17 +1,20 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import logo from '../logo.png'
 import { useAuth } from '../hooks/useAuth'
+import { useCurrency } from '../hooks/useCurrency'
 
 // Links are shown only when the token carries the scope the page needs.
 const LINKS = [
   { to: '/search', label: 'Book' },
   { to: '/booking', label: 'Manage booking' },
   { to: '/checkin', label: 'Check-in' },
+  { to: '/help', label: 'Help' },
   { to: '/admin', label: 'Admin', scope: 'admin' },
 ]
 
 export default function Navbar() {
   const { user, hasScope, logout } = useAuth()
+  const { currency, currencies, setCurrency } = useCurrency()
   const navigate = useNavigate()
   const visible = LINKS.filter((link) => !link.scope || (user && hasScope(link.scope)))
 
@@ -38,6 +41,10 @@ export default function Navbar() {
               {label}
             </NavLink>
           ))}
+          <select aria-label="Currency" className="ml-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm font-semibold text-slate-700"
+            value={currency} onChange={(e) => setCurrency(e.target.value)}>
+            {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+          </select>
           {user ? (
             <div className="ml-2 flex items-center gap-2 border-l border-slate-200 pl-3 text-sm">
               <span className="text-slate-700">{user.name}</span>

@@ -16,3 +16,16 @@
   .data-table th { @apply bg-slate-100 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600; }
   .data-table td { @apply whitespace-nowrap px-3 py-2; }
 }
+
+/* Rendered policy Markdown on the Help page */
+.policy h1 { @apply mb-3 text-2xl font-bold text-slate-900; }
+.policy h2 { @apply mt-6 mb-2 text-lg font-semibold text-slate-900; }
+.policy h3 { @apply mt-4 mb-1 font-semibold text-slate-800; }
+.policy p { @apply my-2 text-sm leading-6 text-slate-700; }
+.policy ul { @apply my-2 list-disc pl-6 text-sm leading-6 text-slate-700; }
+.policy ol { @apply my-2 list-decimal pl-6 text-sm leading-6 text-slate-700; }
+.policy table { @apply my-3 w-full text-sm; }
+.policy th { @apply border-b border-slate-200 bg-slate-50 px-2 py-1 text-left; }
+.policy td { @apply border-b border-slate-100 px-2 py-1; }
+.policy code { @apply rounded bg-slate-100 px-1 text-xs; }
+.policy blockquote { @apply border-l-4 border-amber-300 bg-amber-50 px-3 py-1 text-sm; }

@@ -2,10 +2,11 @@
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
+from app.config import settings
 from app.db.database import next_id, transaction
 from app.db.database import repositories as db
-from app.models.enums import BOOKABLE_FLIGHT_STATUSES, FlightStatus
-from app.services import aircraft_service, fare_service
+from app.models.enums import BOOKABLE_FLIGHT_STATUSES, FlightPhase, FlightStatus
+from app.services import aircraft_service, baggage_service, fare_service
 from app.services import reference_service as ref
 from app.utils.errors import BadRequestError, ConflictError, NotFoundError
 from app.utils.timeutils import in_timezone, now_iso, parse_dt, utcnow
@@ -49,6 +50,28 @@ def has_departed(flight: dict) -> bool:
     return parse_dt(flight["departure_time"]) <= utcnow()
 
 
+def phase(flight: dict, now: datetime | None = None) -> FlightPhase:
+    """Operational phase from the departure timeline (check-in, boarding, gate, departure, arrival)."""
+    if flight["status"] == FlightStatus.CANCELLED:
+        return FlightPhase.CANCELLED
+    now = now or utcnow()
+    departure, arrival = parse_dt(flight["departure_time"]), parse_dt(flight["arrival_time"])
+    if now >= arrival:
+        return FlightPhase.ARRIVED
+    if now >= departure or flight["status"] == FlightStatus.DEPARTED:
+        return FlightPhase.DEPARTED
+    minutes_left = (departure - now).total_seconds() / 60
+    if minutes_left <= settings.boarding_closes_minutes:
+        return FlightPhase.GATE_CLOSED
+    if minutes_left <= settings.boarding_opens_minutes:
+        return FlightPhase.BOARDING
+    if minutes_left <= settings.checkin_closes_minutes:
+        return FlightPhase.CHECKIN_CLOSED
+    if minutes_left <= settings.checkin_opens_hours * 60:
+        return FlightPhase.CHECKIN_OPEN
+    return FlightPhase.SCHEDULED
+
+
 def get_bookable_flight(flight_id: str) -> dict:
     flight = get_flight(flight_id)
     if flight["status"] not in BOOKABLE_FLIGHT_STATUSES:
@@ -70,6 +93,8 @@ def summarize(flight: dict, airports: dict | None = None, aircraft: dict | None 
         "arrival": flight["arrival_time"],
         "duration_minutes": flight["duration_minutes"],
         "status": flight["status"],
+        "phase": phase(flight),
+        "domestic": ref.is_domestic(flight["departure_airport"], flight["arrival_airport"], airports),
         "aircraft_model": aircraft.get("model", "Unknown"),
     }
 
@@ -86,7 +111,6 @@ def search_flights(
 
     airports = ref.airport_map()
     aircraft = {a["aircraft_id"]: a for a in db.aircrafts.all()}
-    fares = fare_service.fares_by_flight()
     names = ref.class_names()
     day = travel_date.isoformat()
 
@@ -97,6 +121,7 @@ def search_flights(
         and f["departure_date"] == day
         and f["status"] in BOOKABLE_FLIGHT_STATUSES
     )
+    fares = fare_service.fares_by_flight({f["flight_id"] for f in candidates})
     for flight in candidates:
         if has_departed(flight):
             continue
@@ -108,6 +133,9 @@ def search_flights(
                 "price": fare["base_price"],
                 "currency": fare["currency"],
                 "available_seats": fare["available_seats"],
+                "baggage": baggage_service.for_party(
+                    ref.is_domestic(origin, destination, airports), fare["class_id"]
+                ),
             }
             for fare in sorted(fares.get(flight["flight_id"], []), key=lambda f: f["base_price"])
             if fare["available_seats"] >= passengers and (class_id is None or fare["class_id"] == class_id)
@@ -156,6 +184,7 @@ def _schedule_view(flight: dict, aircraft: dict, fares: list[dict]) -> dict:
     available = sum(f["available_seats"] for f in fares)
     return {
         **flight,
+        "phase": phase(flight),
         "aircraft_registration": aircraft.get("registration", ""),
         "aircraft_model": aircraft.get("model", ""),
         "capacity": capacity,
@@ -167,8 +196,8 @@ def _schedule_view(flight: dict, aircraft: dict, fares: list[dict]) -> dict:
 def list_schedules(limit: int, offset: int, **filters) -> dict:
     flights = list_flights(**filters)
     aircraft = {a["aircraft_id"]: a for a in db.aircrafts.all()}
-    fares = fare_service.fares_by_flight()
     page = flights[offset : offset + limit]
+    fares = fare_service.fares_by_flight({f["flight_id"] for f in page})
     return {
         "total": len(flights),
         "limit": limit,

@@ -1,10 +1,10 @@
 """Centralised TinyDB access.
 
 A single TinyDB instance is shared by the whole application. Reads are served
-from an in-memory cache and every write is flushed to disk immediately.
-All writes go through a re-entrant lock so that multi-step business operations
-(e.g. check seat availability -> reserve seats) can be made atomic with
-``with transaction():``.
+from an in-memory cache. Writes go through a re-entrant lock; multi-step business
+operations (e.g. check seat availability -> reserve seats) are grouped with
+``with transaction():`` and flushed to disk once, when the outermost transaction
+ends. A standalone write is its own transaction.
 """
 import copy
 from collections.abc import Callable, Iterable
@@ -20,6 +20,7 @@ from app.config import settings
 
 _lock = RLock()
 _db: TinyDB | None = None
+_depth = 0  # transaction nesting level; protected by _lock
 
 COUNTERS_TABLE = "counters"
 
@@ -29,7 +30,7 @@ def get_db() -> TinyDB:
     if _db is None:
         settings.database_path.parent.mkdir(parents=True, exist_ok=True)
         _db = TinyDB(settings.database_path, storage=CachingMiddleware(JSONStorage))
-        _db.storage.WRITE_CACHE_SIZE = 1  # flush every write
+        _db.storage.WRITE_CACHE_SIZE = 10**9  # flushed explicitly at the end of each transaction
     return _db
 
 
@@ -42,9 +43,16 @@ def close_db() -> None:
 
 @contextmanager
 def transaction():
-    """Serialise a multi-step read/modify/write sequence."""
+    """Serialise a multi-step read/modify/write sequence and persist it once at the end."""
+    global _depth
     with _lock:
-        yield
+        _depth += 1
+        try:
+            yield
+        finally:
+            _depth -= 1
+            if _depth == 0:
+                get_db().storage.flush()
 
 
 class Repository:
@@ -61,6 +69,10 @@ class Repository:
     def all(self) -> list[dict]:
         return [copy.deepcopy(dict(doc)) for doc in self.table.all()]
 
+    def scan(self, predicate: Callable[[dict], bool]) -> list[dict]:
+        """Read-only fast path: matching records without copying. Callers must not mutate them."""
+        return [doc for doc in self.table.all() if predicate(doc)]
+
     def get(self, record_id: str) -> dict | None:
         doc = self.table.get(where(self.key) == record_id)
         return copy.deepcopy(dict(doc)) if doc else None
@@ -76,25 +88,25 @@ class Repository:
         return [copy.deepcopy(dict(doc)) for doc in self.table.all() if predicate(doc)]
 
     def insert(self, record: dict) -> dict:
-        with _lock:
+        with transaction():
             self.table.insert(record)
         return record
 
     def insert_many(self, records: Iterable[dict]) -> None:
-        with _lock:
+        with transaction():
             self.table.insert_multiple(list(records))
 
     def update(self, record_id: str, changes: dict) -> dict | None:
-        with _lock:
+        with transaction():
             self.table.update(changes, where(self.key) == record_id)
         return self.get(record_id)
 
     def remove(self, record_id: str) -> None:
-        with _lock:
+        with transaction():
             self.table.remove(where(self.key) == record_id)
 
     def remove_where(self, **filters: Any) -> None:
-        with _lock:
+        with transaction():
             self.table.remove(lambda doc: all(doc.get(k) == v for k, v in filters.items()))
 
     def count(self) -> int:
@@ -104,7 +116,7 @@ class Repository:
         return len(self.table) == 0
 
     def truncate(self) -> None:
-        with _lock:
+        with transaction():
             self.table.truncate()
 
 
@@ -128,6 +140,9 @@ class Repositories:
         self.ssrs = Repository("specialservicerequests", "ssr_id")
         self.checkins = Repository("checkins", "checkin_id")
         self.tickets = Repository("tickets", "ticket_id")
+        self.payment_attempts = Repository("payment_attempts", "attempt_id")
+        self.webhooks = Repository("webhooks", "webhook_id")
+        self.webhook_deliveries = Repository("webhook_deliveries", "delivery_id")
 
     def every(self) -> list[Repository]:
         return list(vars(self).values())
@@ -138,7 +153,7 @@ repositories = Repositories()
 
 def next_id(prefix: str) -> str:
     """Return the next sequential identifier for a prefix, e.g. BK001, BK002."""
-    with _lock:
+    with transaction():
         counters = get_db().table(COUNTERS_TABLE)
         row = counters.get(where("prefix") == prefix)
         value = (row["value"] if row else 0) + 1
@@ -147,14 +162,14 @@ def next_id(prefix: str) -> str:
 
 
 def set_counter(prefix: str, value: int) -> None:
-    with _lock:
+    with transaction():
         get_db().table(COUNTERS_TABLE).upsert(
             {"prefix": prefix, "value": value}, where("prefix") == prefix
         )
 
 
 def reset_database() -> None:
-    with _lock:
+    with transaction():
         for repo in repositories.every():
             repo.truncate()
         get_db().table(COUNTERS_TABLE).truncate()

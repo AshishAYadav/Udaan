@@ -11,8 +11,8 @@ from datetime import date, timedelta
 
 from app.config import settings
 from app.db.database import repositories as db
-from app.models.enums import BOOKABLE_FLIGHT_STATUSES, PassengerType, TripType
-from app.services import fare_service, flight_service, passenger_service
+from app.models.enums import BOOKABLE_FLIGHT_STATUSES, HOLDING_BOOKING_STATUSES, PassengerType, TripType
+from app.services import baggage_service, fare_service, flight_service, passenger_service
 from app.services import reference_service as ref
 from app.utils.errors import BadRequestError, ForbiddenError
 from app.utils.timeutils import parse_dt, utcnow
@@ -114,11 +114,11 @@ def prepare_trip(outbound_ids: list[str], return_ids: list[str], class_id: str, 
 
 
 def ensure_passengers_belong_to(party: list[dict], user_id: str | None) -> None:
-    """Passengers must be owned by the booking user, or be unowned (guest) and never booked before.
+    """Passengers must be owned by the booking user, or be unowned (guest) and not on another live booking.
 
     The second rule stops anyone reusing another guest's passenger records.
     """
-    booked = {pid for b in db.bookings.all() for pid in b["passenger_ids"]}
+    booked = {pid for b in db.bookings.scan(lambda b: b["status"] in HOLDING_BOOKING_STATUSES) for pid in b["passenger_ids"]}
     foreign = [
         p["passenger_id"]
         for p in party
@@ -146,6 +146,7 @@ def _itinerary(flights: list[dict], fares_by_flight: dict, names: dict, airports
     per_flight = [{f["class_id"]: f for f in fares_by_flight.get(fl["flight_id"], [])} for fl in flights]
     common = set.intersection(*(set(p) for p in per_flight))
     seats = party[PassengerType.ADULT] + party[PassengerType.CHILD]
+    domestic = all(ref.is_domestic(f["departure_airport"], f["arrival_airport"], airports) for f in flights)
     classes = []
     for cid in common:
         segment_fares = [p[cid] for p in per_flight]
@@ -162,6 +163,7 @@ def _itinerary(flights: list[dict], fares_by_flight: dict, names: dict, airports
                 "party_total": round(sum(prices[t] * n for t, n in party.items()), 2),
                 "currency": segment_fares[0]["currency"],
                 "available_seats": min(f["available_seats"] for f in segment_fares),
+                "baggage": baggage_service.for_party(domestic, cid),
             }
         )
     if not classes:
@@ -172,6 +174,7 @@ def _itinerary(flights: list[dict], fares_by_flight: dict, names: dict, airports
         "itinerary_id": "-".join(f["flight_id"] for f in flights),
         "flight_ids": [f["flight_id"] for f in flights],
         "stops": len(flights) - 1,
+        "domestic": domestic,
         "origin": ref.airport_brief(airports[flights[0]["departure_airport"]]),
         "destination": ref.airport_brief(airports[flights[-1]["arrival_airport"]]),
         "departure": flights[0]["departure_time"],
@@ -203,7 +206,6 @@ def search_itineraries(
 
     airports = ref.airport_map()
     aircraft = {a["aircraft_id"]: a for a in db.aircrafts.all()}
-    fares = fare_service.fares_by_flight()
     names = ref.class_names()
     day = travel_date.isoformat()
     _, longest = connection_limits(domestic=False)
@@ -211,8 +213,9 @@ def search_itineraries(
     last_day = (travel_date + timedelta(days=longest.days + 2)).isoformat()
 
     candidates = [
-        f for f in db.flights.filter(lambda f: day <= f["departure_date"] <= last_day) if _bookable_after_now(f)
+        f for f in db.flights.scan(lambda f: day <= f["departure_date"] <= last_day) if _bookable_after_now(f)
     ]
+    fares = fare_service.fares_by_flight({f["flight_id"] for f in candidates})
     first_legs = [f for f in candidates if f["departure_airport"] == origin and f["departure_date"] == day]
     arriving = [f for f in candidates if f["arrival_airport"] == destination]
 

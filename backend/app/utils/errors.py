@@ -23,3 +23,7 @@ class ConflictError(DomainError):
 
 class ForbiddenError(DomainError):
     status_code = 403
+
+
+class PaymentDeclinedError(DomainError):
+    status_code = 402

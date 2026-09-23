@@ -30,7 +30,7 @@ membership tier.
 | `passengers:write` | customers, admin | create / modify / delete own passengers |
 | `bookings:read` | customers, admin | own bookings, PNR + last-name retrieval, payments, tickets |
 | `bookings:write` | customers, admin | create, change, cancel own bookings |
-| `payments:write` | customers, admin | create, approve/reject, complete own payments |
+| `payments:write` | customers, admin | reserved for payment operations (payments are made on the hosted page) |
 | `checkin:write` | customers, admin | check in by PNR + last name, change seat |
 | `ssr:read` | customers, admin | view SSRs and eligibility |
 | `ssr:write` | customers whose tier allows any SSR, admin | create / cancel SSRs (with the matching type scope) |
@@ -52,8 +52,8 @@ These endpoints work **without a token**. If a token is sent, it must be valid a
 | Endpoint | How guests are authorised |
 |---|---|
 | `POST /passengers` | creates an unowned passenger |
-| `POST /payments`, `PUT /payments/{id}`, `POST /payments/{id}/complete`, `GET /payments/{id}[/status]` | the payment's `access_key`, returned once on creation and sent back as the `X-Payment-Key` header |
-| `POST /bookings` | `payment_key` in the body |
+| `POST /bookings` | creates a held booking owned by nobody |
+| `GET /payment-sessions/{session_id}`, `POST …/pay` | the secret session id in the payment URL |
 | `GET /bookings/pnr/{pnr}`, `GET /bookings/{id}`, `PUT` / `change` / `cancel` / `history` | a passenger's `last_name` |
 | `POST /checkins/validate`, `POST /checkins`, `GET /tickets/{id}` | PNR + `last_name` |
 

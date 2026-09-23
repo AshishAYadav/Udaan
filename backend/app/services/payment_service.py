@@ -1,110 +1,197 @@
-"""Mock payment gateway.
+"""Hosted payment sessions (checkout), modelled on Stripe Checkout.
 
-State machine:
-    PENDING --APPROVE--> APPROVED --complete--> COMPLETED --(booking cancelled)--> REFUNDED
-    PENDING --REJECT---> REJECTED --complete--> FAILED
+A session is created for a held booking. It has a secret `session_id`, and its hosted page is
+`{PUBLIC_UI_URL}/pay/{session_id}`, so anyone holding the link can pay. Card details are
+checked against the sandbox test cards. Every attempt is logged, and only the card brand and
+last four digits are stored.
 
-Guests (no token) are identified by the payment's `access_key`, returned once when
-the payment is created and presented as the `X-Payment-Key` header afterwards.
+Session status: PENDING → COMPLETED (→ REFUNDED) | EXPIRED | CANCELLED.
 """
-import hmac
+import re
 import secrets
+from calendar import monthrange
+from datetime import date, datetime
 
 from app.auth.dependencies import Principal, owns
+from app.config import settings
 from app.db.database import next_id
 from app.db.database import repositories as db
-from app.models.enums import PaymentAction, PaymentStatus
-from app.services import itinerary_service
-from app.services import reference_service as ref
-from app.utils.errors import ConflictError, ForbiddenError, NotFoundError
-from app.utils.timeutils import now_iso
+from app.models.enums import PaymentAttemptResult, PaymentStatus
+from app.services import currency_service
+from app.utils.errors import ConflictError, NotFoundError
+from app.utils.timeutils import now_iso, parse_dt, utcnow
+
+MERCHANT = "Udaan Airlines"
+
+TEST_CARDS: dict[str, str] = {
+    "378282246310005": "American Express",
+    "371449635398431": "American Express",
+    "378734493671000": "American Express Corporate",
+    "5610591081018250": "Australian BankCard",
+    "30569309025904": "Diners Club",
+    "38520000023237": "Diners Club",
+    "6011111111111117": "Discover",
+    "6011000990139424": "Discover",
+    "3530111333300000": "JCB",
+    "3566002020360505": "JCB",
+    "5555555555554444": "MasterCard",
+    "5105105105105100": "MasterCard",
+    "4111111111111111": "Visa",
+    "4012888888881881": "Visa",
+    "4222222222222": "Visa",
+    "76009244561": "Dankort (PBS)",
+    "5019717010103742": "Dankort (PBS)",
+    "6331101999990016": "Switch/Solo (Paymentech)",
+}
 
 
-def resolve_user_id(requested: str | None, actor: Principal | None) -> str | None:
-    """Guests book without an account; customers act for themselves; admins may act for any user."""
-    if actor is None:
-        if requested:
-            raise ForbiddenError("Log in to pay or book on behalf of a user account.")
-        return None
-    if actor.is_admin:
-        user_id = requested or actor.user_id
-    elif requested and requested != actor.user_id:
-        raise ForbiddenError("You can only make payments and bookings for your own account.")
-    else:
-        user_id = actor.user_id
-    ref.get_user(user_id)
-    return user_id
+def payment_url(session_id: str) -> str:
+    return f"{settings.public_ui_url}/pay/{session_id}"
 
 
-def get_payment(payment_id: str, actor: Principal | None, access_key: str | None = None) -> dict:
-    """Owner/admin by token, or anyone presenting the payment's access key."""
-    payment = db.payments.get(payment_id)
-    if not payment:
-        raise NotFoundError(f"Payment {payment_id} not found.")
-    key_ok = bool(access_key) and hmac.compare_digest(access_key, payment.get("access_key", ""))
-    if not (owns(actor, payment["user_id"]) or key_ok):
-        raise NotFoundError(f"Payment {payment_id} not found.")
-    return payment
+def _expired(payment: dict) -> bool:
+    return payment["status"] == PaymentStatus.PENDING and utcnow() >= parse_dt(payment["expires_at"])
 
 
-def create_payment(data, actor: Principal | None) -> dict:
-    """Create a PENDING payment whose amount is calculated by the server."""
-    user_id = resolve_user_id(data.user_id, actor)
-    trip = itinerary_service.prepare_trip(data.outbound_flight_ids, data.return_flight_ids, data.class_id, data.passenger_ids)
-    itinerary_service.ensure_passengers_belong_to(trip["party"], user_id)
-
+def create_session(booking: dict, currency: str, expires_at: datetime, breakdown: list[dict], options: dict) -> dict:
+    """Open a new session for a booking; any other open session for it is cancelled."""
+    for old in db.payments.find(booking_id=booking["booking_id"], status=PaymentStatus.PENDING.value):
+        db.payments.update(old["payment_id"], {"status": PaymentStatus.CANCELLED.value, "updated_at": now_iso()})
+    currency = currency_service.validate(currency)
+    session_id = "ps_" + secrets.token_urlsafe(24)
     payment = {
         "payment_id": next_id("PAY"),
-        "user_id": user_id,
-        "outbound_flight_ids": data.outbound_flight_ids,
-        "return_flight_ids": data.return_flight_ids,
-        "class_id": data.class_id.value,
-        "passenger_ids": data.passenger_ids,
-        "amount": trip["quote"]["total"],
-        "currency": trip["quote"]["currency"],
-        "method": data.method,
+        "session_id": session_id,
+        "booking_id": booking["booking_id"],
+        "pnr": booking["pnr"],
+        "user_id": booking["user_id"],
+        "amount": currency_service.convert(booking["base_amount"], currency),
+        "currency": currency,
+        "base_amount": booking["base_amount"],
+        "base_currency": settings.currency,
+        "exchange_rate": currency_service.RATES[currency],
+        "breakdown": breakdown,
         "status": PaymentStatus.PENDING.value,
-        "breakdown": trip["quote"]["lines"],
-        "booking_id": None,
-        "access_key": secrets.token_urlsafe(16),
+        "payment_url": payment_url(session_id),
+        "expires_at": expires_at.isoformat(timespec="seconds"),
+        "client_reference_id": options.get("client_reference_id"),
+        "metadata": options.get("metadata") or {},
+        "success_url": options.get("success_url"),
+        "cancel_url": options.get("cancel_url"),
+        "card": None,
         "created_at": now_iso(),
+        "completed_at": None,
         "updated_at": None,
     }
     return db.payments.insert(payment)
 
 
-def apply_action(payment_id: str, action: PaymentAction, actor: Principal | None, access_key: str | None = None) -> dict:
-    payment = get_payment(payment_id, actor, access_key)
-    if payment["status"] != PaymentStatus.PENDING:
-        raise ConflictError(f"Payment {payment_id} is {payment['status']}; only PENDING payments can be approved or rejected.")
-    status = PaymentStatus.APPROVED if action == PaymentAction.APPROVE else PaymentStatus.REJECTED
-    return db.payments.update(payment_id, {"status": status.value, "updated_at": now_iso()})
+def get_by_session(session_id: str) -> dict:
+    payment = db.payments.find_one(session_id=session_id)
+    if not payment:
+        raise NotFoundError("Payment session not found.")
+    if _expired(payment):
+        payment = db.payments.update(payment["payment_id"], {"status": PaymentStatus.EXPIRED.value, "updated_at": now_iso()})
+    return payment
 
 
-def complete_payment(payment_id: str, actor: Principal | None, access_key: str | None = None) -> dict:
-    payment = get_payment(payment_id, actor, access_key)
-    transitions = {PaymentStatus.APPROVED: PaymentStatus.COMPLETED, PaymentStatus.REJECTED: PaymentStatus.FAILED}
-    status = PaymentStatus(payment["status"])
-    if status == PaymentStatus.PENDING:
-        raise ConflictError(f"Payment {payment_id} must be approved or rejected before completion.")
-    if status not in transitions:
-        raise ConflictError(f"Payment {payment_id} is already finalised ({status}).")
-    return db.payments.update(payment_id, {"status": transitions[status].value, "updated_at": now_iso()})
-
-
-def payment_status(payment_id: str, actor: Principal | None, access_key: str | None = None) -> dict:
-    payment = get_payment(payment_id, actor, access_key)
-    return {
-        "payment_id": payment_id,
-        "status": payment["status"],
-        "amount": payment["amount"],
-        "currency": payment["currency"],
-        "booking_id": payment["booking_id"],
-        "can_create_booking": payment["status"] == PaymentStatus.COMPLETED and not payment["booking_id"],
-    }
-
-
-def refund(payment_id: str) -> None:
+def get_payment(payment_id: str, actor: Principal | None) -> dict:
     payment = db.payments.get(payment_id)
+    if not payment or not owns(actor, payment["user_id"]):
+        raise NotFoundError(f"Payment {payment_id} not found.")
+    return payment
+
+
+def list_payments(actor: Principal, booking_id: str | None = None) -> list[dict]:
+    def matches(p: dict) -> bool:
+        return (actor.is_admin or p["user_id"] == actor.user_id) and (not booking_id or p["booking_id"] == booking_id)
+
+    return sorted(db.payments.filter(matches), key=lambda p: p["payment_id"], reverse=True)
+
+
+def attempts(payment_id: str) -> list[dict]:
+    return sorted(db.payment_attempts.find(payment_id=payment_id), key=lambda a: a["attempt_id"])
+
+
+# Card checks
+
+def _card_error(number: str, expiry: str, cvv: str, holder: str) -> tuple[str | None, str | None]:
+    """Return (brand, decline reason). The reason is None when the card is accepted."""
+    brand = TEST_CARDS.get(number)
+    if not brand:
+        return None, "Card declined: sandbox accepts only the published test card numbers."
+    match = re.fullmatch(r"(\d{2})/?(\d{2})", expiry.strip())
+    if not match or not 1 <= int(match.group(1)) <= 12:
+        return brand, "Invalid expiry date; use MMYY."
+    year, month = 2000 + int(match.group(2)), int(match.group(1))
+    if date(year, month, monthrange(year, month)[1]) < date.today():
+        return brand, "Card declined: the card has expired."
+    expected_cvv = 4 if brand.startswith("American Express") else 3
+    if not re.fullmatch(rf"\d{{{expected_cvv}}}", cvv.strip()):
+        return brand, f"Invalid security code; {brand} uses {expected_cvv} digits."
+    if not holder.strip():
+        return brand, "Cardholder name is required."
+    return brand, None
+
+
+def charge(payment: dict, card) -> tuple[bool, str | None, dict]:
+    """Validate the card and record the attempt. Returns (succeeded, decline reason, updated payment)."""
+    if payment["status"] != PaymentStatus.PENDING:
+        raise ConflictError(f"This payment session is {payment['status'].lower()}.")
+    number = re.sub(r"[\s-]", "", card.card_number)
+    brand, reason = _card_error(number, card.expiry, card.cvv, card.holder_name)
+    card_info = {"brand": brand or "Unknown", "last4": number[-4:], "holder_name": card.holder_name.strip()}
+    db.payment_attempts.insert(
+        {
+            "attempt_id": next_id("ATT"),
+            "payment_id": payment["payment_id"],
+            "result": (PaymentAttemptResult.DECLINED if reason else PaymentAttemptResult.SUCCEEDED).value,
+            "reason": reason,
+            "card": card_info,
+            "created_at": now_iso(),
+        }
+    )
+    if reason:
+        return False, reason, payment
+    updated = db.payments.update(
+        payment["payment_id"],
+        {"status": PaymentStatus.COMPLETED.value, "card": card_info, "completed_at": now_iso(), "updated_at": now_iso()},
+    )
+    return True, None, updated
+
+
+def close_open_sessions(booking_id: str, status: PaymentStatus) -> None:
+    for payment in db.payments.find(booking_id=booking_id, status=PaymentStatus.PENDING.value):
+        db.payments.update(payment["payment_id"], {"status": status.value, "updated_at": now_iso()})
+
+
+def refund(payment_id: str | None) -> None:
+    payment = db.payments.get(payment_id) if payment_id else None
     if payment and payment["status"] == PaymentStatus.COMPLETED:
         db.payments.update(payment_id, {"status": PaymentStatus.REFUNDED.value, "updated_at": now_iso()})
+
+
+def public_view(payment: dict) -> dict:
+    """What the hosted page may show: no personal data beyond the booking summary."""
+    booking = db.bookings.get(payment["booking_id"]) or {}
+    flights = [db.flights.get(s["flight_id"]) for s in booking.get("segments", [])]
+    return {
+        "session_id": payment["session_id"],
+        "status": payment["status"],
+        "merchant": MERCHANT,
+        "description": f"Flight booking {payment['pnr']}",
+        "pnr": payment["pnr"],
+        "amount": payment["amount"],
+        "currency": payment["currency"],
+        "base_amount": payment["base_amount"],
+        "base_currency": payment["base_currency"],
+        "expires_at": payment["expires_at"],
+        "passengers": len(booking.get("passenger_ids", [])),
+        "itinerary": [
+            f"{f['flight_number']} {f['departure_airport']}→{f['arrival_airport']} {f['departure_time'][:16].replace('T', ' ')}"
+            for f in flights if f
+        ],
+        "card": payment["card"],
+        "success_url": payment["success_url"],
+        "cancel_url": payment["cancel_url"],
+    }

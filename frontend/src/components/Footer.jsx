@@ -16,6 +16,8 @@ export default function Footer() {
           <Link className="block hover:text-blue-700" to="/search">Book a flight</Link>
           <Link className="block hover:text-blue-700" to="/booking">Manage booking</Link>
           <Link className="block hover:text-blue-700" to="/checkin">Online check-in</Link>
+          <Link className="block hover:text-blue-700" to="/help/baggage">Baggage</Link>
+          <Link className="block hover:text-blue-700" to="/help">Help & policies</Link>
         </div>
         <div className="space-y-1">
           <p className="font-semibold text-slate-800">Udaan Club</p>

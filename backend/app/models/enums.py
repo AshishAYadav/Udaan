@@ -3,27 +3,31 @@ from enum import StrEnum
 
 
 class BookingStatus(StrEnum):
-    PENDING = "PENDING"
+    PENDING = "PENDING"  # held: PNR and seats reserved, awaiting payment
     CONFIRMED = "CONFIRMED"
     CHANGED = "CHANGED"
     CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"  # hold lapsed without payment
 
 
 ACTIVE_BOOKING_STATUSES = {BookingStatus.CONFIRMED, BookingStatus.CHANGED}
+# Statuses that hold seats and passengers (confirmed bookings plus unpaid holds)
+HOLDING_BOOKING_STATUSES = ACTIVE_BOOKING_STATUSES | {BookingStatus.PENDING}
 
 
 class PaymentStatus(StrEnum):
-    PENDING = "PENDING"
-    APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
+    """Status of a payment session (hosted checkout)."""
+
+    PENDING = "PENDING"  # open, awaiting a successful card payment
     COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
+    CANCELLED = "CANCELLED"  # superseded or booking cancelled before payment
     REFUNDED = "REFUNDED"
 
 
-class PaymentAction(StrEnum):
-    APPROVE = "APPROVE"
-    REJECT = "REJECT"
+class PaymentAttemptResult(StrEnum):
+    SUCCEEDED = "SUCCEEDED"
+    DECLINED = "DECLINED"
 
 
 class CheckinStatus(StrEnum):
@@ -45,6 +49,19 @@ class FlightStatus(StrEnum):
 
 
 BOOKABLE_FLIGHT_STATUSES = {FlightStatus.SCHEDULED, FlightStatus.DELAYED}
+
+
+class FlightPhase(StrEnum):
+    """Operational phase derived from the stored status and the departure timeline."""
+
+    SCHEDULED = "SCHEDULED"
+    CHECKIN_OPEN = "CHECKIN_OPEN"
+    CHECKIN_CLOSED = "CHECKIN_CLOSED"
+    BOARDING = "BOARDING"
+    GATE_CLOSED = "GATE_CLOSED"
+    DEPARTED = "DEPARTED"
+    ARRIVED = "ARRIVED"
+    CANCELLED = "CANCELLED"
 
 
 class PassengerType(StrEnum):

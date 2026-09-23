@@ -3,14 +3,7 @@ from fastapi import APIRouter, status
 from app.api.common import error_responses
 from app.auth.dependencies import Principal, optional, require
 from app.models.enums import CheckinStatus
-from app.schemas.checkin import (
-    Checkin,
-    CheckinCreate,
-    CheckinResult,
-    CheckinUpdate,
-    CheckinValidateRequest,
-    CheckinValidation,
-)
+from app.schemas.checkin import Checkin, CheckinCreate, CheckinLookup, CheckinResult, CheckinUpdate, CheckinValidation
 from app.services import checkin_service
 
 router = APIRouter(prefix="/checkins", tags=["Check-in"])
@@ -30,20 +23,20 @@ def list_checkins(
 
 @router.post("/validate", response_model=CheckinValidation, responses=error_responses(404),
              summary="Validate check-in",
-             description="**Booking flow step 8a.** Finds the booking by **PNR + passenger last name** and picks the "
-                         "journey to check in (default: the next upcoming journey). It returns the segments covered "
-                         "and which passengers can check in: the booking must be active, the check-in window open, "
-                         "no flight cancelled, and the passenger not already checked in.")
-def validate_checkin(payload: CheckinValidateRequest, _: Principal | None = optional("checkin:write")):
-    return checkin_service.validate(payload.pnr, payload.last_name, payload.direction)
+             description="**Booking flow step 7a.** Finds the booking by **PNR + passenger last name** and returns, for "
+                         "every flight segment, its live phase, its check-in window (opens 48 h, closes 4 h before "
+                         "departure by default), and each passenger's eligibility. Open to guests.")
+def validate_checkin(payload: CheckinLookup, _: Principal | None = optional("checkin:write")):
+    return checkin_service.validate(payload.pnr, payload.last_name)
 
 
 @router.post("", response_model=CheckinResult, status_code=status.HTTP_201_CREATED,
              responses=error_responses(400, 404, 409), summary="Create check-in",
-             description="**Booking flow step 8b.** Through check-in: checks the selected (default: all eligible) "
-                         "passengers in on **every remaining segment** of the journey, assigns seats (infants get "
-                         "`INF`) and **issues one ticket / boarding pass per passenger per segment**. Checking in a "
-                         "passenger twice returns 409.")
+             description="**Booking flow step 7b.** Checks in the selected passengers on the selected flights and issues "
+                         "**one ticket / boarding pass per passenger per flight**. By default it covers every flight "
+                         "whose window is open and every passenger not yet checked in. Passengers can check in one at a "
+                         "time, but an adult with an infant on their lap must check in together with that infant. "
+                         "Checking in twice returns 409.")
 def create_checkin(payload: CheckinCreate, _: Principal | None = optional("checkin:write")):
     return checkin_service.check_in(payload)
 

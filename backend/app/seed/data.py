@@ -15,51 +15,42 @@ AIRPORTS = [
     ("HND", "Tokyo Haneda Airport", "Tokyo", "Japan", "Asia/Tokyo"),
 ]
 
-# (origin, destination, duration_minutes, distance_km, flight_number)
+# (origin, destination, duration_minutes, distance_km). Route RTnnn flights are numbered UD<slot><nn>.
 ROUTES = [
-    ("DXB", "LHR", 450, 5470, "UD101"),
-    ("DEL", "DXB", 215, 2190, "UD103"),
-    ("BOM", "SIN", 330, 3900, "UD105"),
-    ("LHR", "JFK", 480, 5540, "UD107"),
-    ("BLR", "DEL", 165, 1740, "UD109"),
-    ("LHR", "DXB", 420, 5470, "UD102"),
-    ("DXB", "DEL", 190, 2190, "UD104"),
-    ("SIN", "BOM", 350, 3900, "UD106"),
-    ("JFK", "LHR", 415, 5540, "UD108"),
-    ("DEL", "BLR", 170, 1740, "UD110"),
-    ("DOH", "CDG", 400, 4970, "UD111"),
-    ("FRA", "SIN", 740, 10260, "UD113"),
-    ("SYD", "SIN", 480, 6290, "UD115"),
-    ("HND", "SIN", 430, 5320, "UD117"),
+    ("DXB", "LHR", 450, 5470),
+    ("DEL", "DXB", 215, 2190),
+    ("BOM", "SIN", 330, 3900),
+    ("LHR", "JFK", 480, 5540),
+    ("BLR", "DEL", 165, 1740),
+    ("LHR", "DXB", 420, 5470),
+    ("DXB", "DEL", 190, 2190),
+    ("SIN", "BOM", 350, 3900),
+    ("JFK", "LHR", 415, 5540),
+    ("DEL", "BLR", 170, 1740),
+    ("DOH", "CDG", 400, 4970),
+    ("FRA", "SIN", 740, 10260),
+    ("SYD", "SIN", 480, 6290),
+    ("HND", "SIN", 430, 5320),
+    ("CDG", "DOH", 390, 4970),
+    ("SIN", "FRA", 780, 10260),
+    ("SIN", "SYD", 470, 6290),
+    ("SIN", "HND", 410, 5320),
+    ("DEL", "BOM", 130, 1150),
+    ("BOM", "DEL", 135, 1150),
+    ("BOM", "BLR", 95, 840),
+    ("BLR", "BOM", 100, 840),
 ]
-
-# Seeded timetable: flight number -> (day parity, local departure "HH:MM").
-# Five flights a day. Even days fly the "eastbound bank", odd days the returns. Times are
-# chosen so banks connect within the connection rules, e.g.
-#   BLR 06:00 -> DEL 08:45 | DEL 11:00 -> DXB | DXB 16:00 -> LHR | LHR 22:30 -> JFK
-#   LHR 08:00 -> DXB 18:00 | DXB 21:00 -> DEL
-TIMETABLE = {
-    "UD109": (0, "06:00"),
-    "UD105": (0, "09:00"),
-    "UD103": (0, "11:00"),
-    "UD101": (0, "16:00"),
-    "UD107": (0, "22:30"),
-    "UD102": (1, "08:00"),
-    "UD106": (1, "09:00"),
-    "UD110": (1, "17:00"),
-    "UD108": (1, "18:00"),
-    "UD104": (1, "21:00"),
-}
 
 # model -> (cabin configuration, bassinet positions)
 AIRCRAFT_TYPES = {
     "A350-900": ({"FIRST": 8, "BUSINESS": 36, "PREMIUM_ECONOMY": 24, "ECONOMY": 232}, 6),
     "B787-9": ({"BUSINESS": 30, "PREMIUM_ECONOMY": 28, "ECONOMY": 232}, 4),
-    "A321neo": ({"BUSINESS": 12, "ECONOMY": 180}, 2),
     "B777-300ER": ({"FIRST": 8, "BUSINESS": 42, "PREMIUM_ECONOMY": 24, "ECONOMY": 280}, 8),
+    "A321neo": ({"BUSINESS": 12, "ECONOMY": 180}, 2),
     "A320neo": ({"ECONOMY": 180}, 0),
 }
-AIRCRAFT_COUNT = 15  # 5 flights/day; each aircraft flies every 3rd day, well clear of block + turnaround time
+# Fleet size per model: wide-bodies for long-haul, narrow-bodies for regional/domestic routes.
+FLEET = {"A350-900": 20, "B787-9": 20, "B777-300ER": 16, "A321neo": 12, "A320neo": 10}
 
 CABIN_CLASSES = [
     ("ECONOMY", "Economy", "Standard economy cabin", 1, 25),

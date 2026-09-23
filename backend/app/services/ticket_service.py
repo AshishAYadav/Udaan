@@ -7,7 +7,7 @@ from app.config import settings
 from app.db.database import next_id
 from app.db.database import repositories as db
 from app.models.enums import CheckinStatus, TicketStatus
-from app.services import passenger_service
+from app.services import baggage_service, flight_service, passenger_service
 from app.services import reference_service as ref
 from app.utils.errors import ConflictError, NotFoundError
 from app.utils.ids import generate_ticket_number
@@ -89,8 +89,11 @@ def boarding_pass(ticket_id: str) -> dict:
     flight = db.flights.get(ticket["flight_id"])
     checkin = db.checkins.get(ticket["checkin_id"]) or {}
     airports = ref.airport_map()
+    booking = db.bookings.get(ticket["booking_id"]) or {}
+    tier = ref.get_user(booking["user_id"])["tier"] if booking.get("user_id") else None
+    domestic = ref.is_domestic(flight["departure_airport"], flight["arrival_airport"], airports)
     departure = parse_dt(flight["departure_time"])
-    boarding = departure - timedelta(minutes=settings.boarding_minutes_before_departure)
+    boarding = departure - timedelta(minutes=settings.boarding_opens_minutes)
     return {
         "ticket_id": ticket["ticket_id"],
         "ticket_number": ticket["ticket_number"],
@@ -112,6 +115,8 @@ def boarding_pass(ticket_id: str) -> dict:
         "cabin_name": ref.class_names().get(ticket["class_id"], ticket["class_id"]),
         "seat": ticket["seat"],
         "sequence_number": checkin.get("sequence_number", 0),
+        "phase": flight_service.phase(flight),
+        "baggage": baggage_service.allowance(domestic, ticket["class_id"], passenger.get("passenger_type", "ADULT"), tier),
     }
 
 

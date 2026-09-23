@@ -10,9 +10,11 @@ from app.schemas.booking import (
     BookingChangeResult,
     BookingCreate,
     BookingHistoryEntry,
+    BookingHold,
     BookingUpdate,
     BookingView,
 )
+from app.schemas.payment import CheckoutOptions
 from app.services import booking_service
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
@@ -33,21 +35,35 @@ def list_bookings(
     return booking_service.list_bookings(actor, user_id, status, pnr)
 
 
-@router.post("", response_model=BookingView, status_code=status.HTTP_201_CREATED,
-             responses=error_responses(400, 404, 409), summary="Make a booking",
-             description="**Booking flow step 6.** Confirms a one-way or round-trip booking (each journey can have one "
-                         "connection) and generates a unique 6-character PNR.\n\n"
-                         "Requires bookable flights with valid connections, the cabin on every segment with enough "
-                         "seats, at least one adult (infants ≤ adults), and a **COMPLETED** payment created for exactly "
-                         "these flights, cabin and passengers. Seats are taken on every segment. Tickets are issued at check-in, not here.\n\n"
-                         "Open to **guests**: send no token and include `payment_key`. Guest bookings cannot add "
-                         "tier-based special services.")
+@router.post("", response_model=BookingHold, status_code=status.HTTP_201_CREATED,
+             responses=error_responses(400, 404, 409), summary="Create a booking (hold) and payment link",
+             description="**Booking flow step 3.** Validates the trip, **holds seats** on every segment, issues the PNR "
+                         "and returns the booking in status **PENDING**, plus a hosted **payment session** "
+                         "(`payment.payment_url`). The hold lasts `BOOKING_HOLD_MINUTES` (default 30). When the payer "
+                         "completes the hosted page, the booking becomes **CONFIRMED** and webhooks are sent. An unpaid "
+                         "hold expires and its seats are released.\n\n"
+                         "Rules: bookable flights with valid connections, the cabin on every segment with enough seats, "
+                         "at least one adult (no more infants than adults), and passengers owned by the booker or new "
+                         "guest passengers. Pass `client_reference_id` / `metadata` to correlate webhooks, for example "
+                         "with an AI-agent conversation. Open to **guests**; tier services need a member account.")
 def create_booking(payload: BookingCreate, actor: Principal | None = optional("bookings:write")):
     return booking_service.create_booking(payload, actor)
 
 
+@router.post("/{booking_id}/payment-session", response_model=BookingHold, responses=error_responses(400, 404, 409),
+             summary="Get a new payment link for a held booking",
+             description="Opens a fresh hosted payment session for a **PENDING** booking, closing earlier open sessions. "
+                         "Use it when a link was lost or to charge in another currency. The hold expiry does not "
+                         "change. This is the call an agent/MCP tool makes: pass the booking id and get a `payment_url`.")
+def new_payment_session(
+    booking_id: str, payload: CheckoutOptions, last_name: str | None = MANAGE_LAST_NAME,
+    actor: Principal | None = optional("bookings:write"),
+):
+    return booking_service.new_payment_session(booking_id, payload, actor, last_name)
+
+
 @router.get("/pnr/{pnr}", response_model=BookingView, responses=error_responses(404), summary="Retrieve booking by PNR + last name",
-            description="**Booking flow step 7.** Airline convention: a PNR is only disclosed together with the last "
+            description="**Booking flow step 5.** Airline convention: a PNR is only disclosed together with the last "
                         "name of a passenger on it. Open to guests.")
 def get_by_pnr(pnr: str, last_name: str = LAST_NAME, _: Principal | None = optional("bookings:read")):
     return booking_service.build_view(booking_service.find_by_pnr(pnr, last_name))
@@ -93,8 +109,8 @@ def change_booking(
 
 @router.post("/{booking_id}/cancel", response_model=BookingView, responses=error_responses(400, 404, 409),
              summary="Cancel a booking",
-             description="Cancels before the first departure: status CANCELLED, seats released on all segments, "
-                         "payment REFUNDED, SSRs, check-ins and tickets cancelled. The PNR is kept. Owner, admin, or "
+             description="Cancels a held or confirmed booking before the first departure: status CANCELLED, seats released on all segments, "
+                         "payment REFUNDED (or an unpaid hold's payment session closed), SSRs, check-ins and tickets cancelled. The PNR is kept. Owner, admin, or "
                          "anyone with a passenger's `last_name`.")
 def cancel_booking(
     booking_id: str, payload: BookingCancelRequest | None = None, last_name: str | None = MANAGE_LAST_NAME,

@@ -1,8 +1,12 @@
-import { duration, localDate, localTime, money } from '../utils/format'
+import BaggageList from './Baggage'
+import { useCurrency } from '../hooks/useCurrency'
+import { duration, localDate, localTime } from '../utils/format'
 
 // One itinerary (direct or connecting). Search is already filtered to a single cabin.
 export default function ItineraryCard({ itinerary, party, selected, onSelect }) {
+  const { price } = useCurrency()
   const cabin = itinerary.available_classes[0]
+  const types = ['ADULT', ...(party?.children ? ['CHILD'] : []), ...(party?.infants ? ['INFANT'] : [])]
   return (
     <div className={`card space-y-3 ${selected ? 'border-blue-500 ring-2 ring-blue-100' : ''}`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -24,11 +28,11 @@ export default function ItineraryCard({ itinerary, party, selected, onSelect }) 
         </div>
         <div className="flex items-center gap-4">
           <div className="text-right">
-            <p className="text-lg font-bold">{money(cabin.party_total, cabin.currency)}</p>
+            <p className="text-lg font-bold">{price(cabin.party_total)}</p>
             <p className="text-xs text-slate-500">
-              {cabin.name} · Adult {money(cabin.price, cabin.currency)}
-              {party?.children > 0 && ` · Child ${money(cabin.child_price, cabin.currency)}`}
-              {party?.infants > 0 && ` · Infant ${money(cabin.infant_price, cabin.currency)}`}
+              {cabin.name} · Adult {price(cabin.price)}
+              {party?.children > 0 && ` · Child ${price(cabin.child_price)}`}
+              {party?.infants > 0 && ` · Infant ${price(cabin.infant_price)}`}
             </p>
             <p className="text-xs text-slate-400">{cabin.available_seats} seats left</p>
           </div>
@@ -48,6 +52,10 @@ export default function ItineraryCard({ itinerary, party, selected, onSelect }) 
           </li>
         ))}
       </ol>
+      <div className="flex flex-wrap items-start justify-between gap-2 border-t border-slate-100 pt-2">
+        <BaggageList allowances={cabin.baggage} types={types} />
+        <span className="text-xs text-slate-400">{itinerary.domestic ? 'Domestic' : 'International'} allowance</span>
+      </div>
     </div>
   )
 }

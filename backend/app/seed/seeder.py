@@ -5,19 +5,17 @@ The database is also rebuilt automatically when SCHEMA_VERSION changes.
 """
 import argparse
 from collections import Counter
-from datetime import date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, timedelta
 
 from app.auth.security import hash_password
 from app.config import settings
-from app.db.database import get_db, reset_database, set_counter
+from app.db.database import get_db, reset_database, set_counter, transaction
 from app.db.database import repositories as db
 from app.models.enums import Role
 from app.seed import data
-from app.services.fare_service import compose_fares
-from app.services.flight_service import compose_flight
+from app.services import schedule_generator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SEED_TIMESTAMP = "2026-01-01T00:00:00+00:00"
 
 
@@ -52,7 +50,7 @@ def _user(new_id: IdFactory, username: str, password: str, role: Role, first: st
     }
 
 
-def _seed_reference(new_id: IdFactory) -> tuple[list[dict], list[dict], dict[str, dict]]:
+def _seed_reference(new_id: IdFactory) -> None:
     airports = {
         code: {"airport_id": code, "iata_code": code, "name": name, "city": city, "country": country, "timezone": tz}
         for code, name, city, country, tz in data.AIRPORTS
@@ -66,17 +64,15 @@ def _seed_reference(new_id: IdFactory) -> tuple[list[dict], list[dict], dict[str
             "destination": destination,
             "duration_minutes": duration,
             "distance_km": distance,
-            "flight_number": number,
             "active": True,
         }
-        for origin, destination, duration, distance, number in data.ROUTES
+        for origin, destination, duration, distance in data.ROUTES
     ]
     db.routes.insert_many(routes)
 
-    models = list(data.AIRCRAFT_TYPES)
     aircraft = []
-    for i in range(data.AIRCRAFT_COUNT):
-        model = models[i % len(models)]
+    models = [model for model, count in data.FLEET.items() for _ in range(count)]
+    for i, model in enumerate(models):
         config, bassinets = data.AIRCRAFT_TYPES[model]
         aircraft.append(
             {
@@ -104,44 +100,19 @@ def _seed_reference(new_id: IdFactory) -> tuple[list[dict], list[dict], dict[str
     ]
     db.users.insert_many(users)
     db.ssr_catalog.insert_many({**item, "currency": settings.currency} for item in data.SSR_CATALOG)
-    return routes, aircraft, airports
 
 
-def _seed_flights(new_id: IdFactory, routes: list[dict], aircraft: list[dict], airports: dict[str, dict]) -> None:
-    """Generate `seed_days` of schedules starting tomorrow from the timetable (5 flights a day).
-
-    Aircraft rotate in groups of five, so each one flies every third day.
-    """
-    by_number = {r["flight_number"]: r for r in routes}
-    banks = {
-        parity: sorted((hhmm, number) for number, (p, hhmm) in data.TIMETABLE.items() if p == parity)
-        for parity in (0, 1)
-    }
-    flights, fares = [], []
-    start = date.today() + timedelta(days=1)
-    for day in range(settings.seed_days):
-        travel_date = start + timedelta(days=day)
-        for slot, (hhmm, number) in enumerate(banks[travel_date.toordinal() % 2]):
-            route = by_number[number]
-            plane = aircraft[((day % 3) * settings.flights_per_day + slot) % len(aircraft)]
-            departure = datetime.combine(
-                travel_date, time.fromisoformat(hhmm), ZoneInfo(airports[route["origin"]]["timezone"])
-            )
-            flight = compose_flight(
-                new_id, number, route, plane["aircraft_id"], departure, airports[route["destination"]]["timezone"]
-            )
-            flights.append(flight)
-            fares.extend(compose_fares(new_id, flight, plane, departure))
-    db.flights.insert_many(flights)
-    db.fares.insert_many(fares)
-
-
-def seed_database() -> None:
+def seed_database() -> dict:
+    """Reference data, then generated schedules from tomorrow for `seed_days` days."""
     new_id = IdFactory()
-    routes, aircraft, airports = _seed_reference(new_id)
-    _seed_flights(new_id, routes, aircraft, airports)
-    new_id.persist()
-    get_db().table("meta").insert({"schema_version": SCHEMA_VERSION})
+    with transaction():
+        _seed_reference(new_id)
+        summary = schedule_generator.generate(
+            date.today() + timedelta(days=1), settings.seed_days, seed=settings.seed_random_seed, new_id=new_id
+        )
+        new_id.persist()
+        get_db().table("meta").insert({"schema_version": SCHEMA_VERSION})
+    return summary
 
 
 def _schema_version() -> int | None:
@@ -165,6 +136,7 @@ def main() -> None:
     if args.reset:
         reset_database()
     print("Database seeded." if init_database() else "Database already up to date; use --reset to rebuild.")
+    print(f"Flights: {db.flights.count()}, fares: {db.fares.count()}, aircraft: {db.aircrafts.count()}")
 
 
 if __name__ == "__main__":

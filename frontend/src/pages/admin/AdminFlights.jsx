@@ -30,6 +30,17 @@ export default function AdminFlights() {
     load(page.offset)
   }
 
+  // Fills gaps in the next 60 days: 3–4 validated flights per route per day (existing flights are kept).
+  const generate = () => {
+    const days = Number(window.prompt('Generate schedules for how many days from tomorrow? (1–120)', '60'))
+    if (!days) return
+    run(async () => {
+      const result = await flightService.generateSchedules({ days })
+      setNotice(`Created ${result.created} flights on ${result.routes} routes (${result.start_date} → ${result.end_date}); skipped ${result.skipped}.`)
+      setPage(await flightService.schedules({ ...filters, limit: PAGE_SIZE, offset: 0 }))
+    })
+  }
+
   const update = (field) => (e) => setFilters({ ...filters, [field]: e.target.value.toUpperCase() })
   const lastItem = Math.min(page.offset + PAGE_SIZE, page.total)
 
@@ -37,7 +48,10 @@ export default function AdminFlights() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Flights</h1>
-        <button className="btn-primary" onClick={() => { setNotice(''); setEditing(null) }}>+ Add flight</button>
+        <div className="flex gap-2">
+          <button className="btn-secondary" disabled={loading} onClick={generate}>⚙ Generate schedules</button>
+          <button className="btn-primary" onClick={() => { setNotice(''); setEditing(null) }}>+ Add flight</button>
+        </div>
       </div>
 
       <form className="card grid gap-3 sm:grid-cols-6 sm:items-end" onSubmit={(e) => { e.preventDefault(); load(0) }}>
@@ -61,7 +75,7 @@ export default function AdminFlights() {
       <div className="card overflow-x-auto p-0">
         <table className="data-table">
           <thead>
-            <tr><th>Flight</th><th>Origin</th><th>Destination</th><th>Departure</th><th>Arrival</th><th>Aircraft</th><th>Status</th><th>Seats</th><th /></tr>
+            <tr><th>Flight</th><th>Origin</th><th>Destination</th><th>Departure</th><th>Arrival</th><th>Aircraft</th><th>Status</th><th>Phase</th><th>Seats</th><th /></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {page.items.map((f) => (
@@ -73,6 +87,7 @@ export default function AdminFlights() {
                 <td>{localDateTime(f.arrival_time)}</td>
                 <td>{f.aircraft_registration}<div className="text-xs text-slate-500">{f.aircraft_model}</div></td>
                 <td><StatusBadge status={f.status} /></td>
+                <td><StatusBadge status={f.phase} /></td>
                 <td>{f.available_seats} / {f.capacity}</td>
                 <td><button className="btn-secondary py-1" onClick={() => { setNotice(''); setEditing(f) }}>Edit</button></td>
               </tr>

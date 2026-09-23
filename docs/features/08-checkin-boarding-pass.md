@@ -1,43 +1,45 @@
-# 08 · Check-in & boarding passes
-
-## Purpose
-Online check-in with **PNR + last name**, seat assignment, and ticket / boarding-pass issuance. Tickets are
-**never** issued at booking time.
+# 08 · Check-in, flight phases and boarding passes
 
 ## Rules
-- The booking is found by PNR and a passenger's last name; both are required.
-- Check-in is per **journey** (through check-in). By default it uses the next journey that still has passengers left
-  to check in (OUTBOUND first, then RETURN), and `direction` can override that. Every remaining segment of the journey
-  is checked in at once.
-- Eligibility: the booking is active; no flight in the journey is cancelled or departed; the **check-in window** is
-  open; the passenger isn't already checked in (checking in twice returns **409**).
-- Window: it opens `CHECKIN_OPENS_HOURS` before departure (default `0` = open straight after booking, which suits the
-  sandbox; use 48 for airline-like behaviour) and closes `CHECKIN_CLOSES_MINUTES` (default 60) before departure.
-- Seats are assigned in the booked cabin's rows (First 1–2, Business 3–14, Premium Economy 15–19, Economy 20–60),
-  first free seat first. Infants get `INF` and must be checked in with, or after, an adult.
-- Each passenger gets **one ticket and one boarding pass per segment**, with a 13-digit ticket number (`775…`).
+- **Lookup:** PNR + a passenger's last name (guests and members).
+- **Window per flight:** check-in opens **48 h** before each segment's departure and closes **4 h** before it.
+  Outbound and return flights (and each leg of a connection) are checked in separately.
+- **Booking:** must be CONFIRMED or CHANGED. A PENDING booking must be paid first.
+- **Individual check-in:** any subset of passengers can check in on a flight.
+- **Infant rule:** an infant and the adult they are paired with must check in together on that flight. An explicit
+  `accompanying_adult_id` is used first; otherwise adults are paired with infants in booking order.
+- **Seats:** assigned in the booked cabin's rows (First 1–2, Business 3–14, Premium Economy 15–19, Economy 20–60). Infants get `INF`.
+- **Tickets:** **one ticket and boarding pass per passenger per flight**, issued at check-in and never at booking.
+- **Duplicates:** checking a passenger in twice on the same flight returns 409.
+
+## Flight phase (live status)
+The phase comes from the stored status and the clock:
+
+| Phase | When |
+|---|---|
+| `SCHEDULED` | Before check-in opens (more than 48 h out) |
+| `CHECKIN_OPEN` | 48 h to 4 h before departure |
+| `CHECKIN_CLOSED` | 4 h to 60 min before departure |
+| `BOARDING` | 60 to 30 min before departure |
+| `GATE_CLOSED` | Less than 30 min before departure |
+| `DEPARTED` | After departure (or the status was set to DEPARTED) |
+| `ARRIVED` | After arrival |
+| `CANCELLED` | The flight status is CANCELLED |
+
+`phase` appears on flight summaries, schedules, the booking view, check-in validation and the boarding pass.
 
 ## API
 
-| Method | Path | Scope |
+| Method | Path | Description |
 |---|---|---|
-| POST | `/api/checkins/validate` `{pnr, last_name, direction?}` | `checkin:write` |
-| POST | `/api/checkins` `{pnr, last_name, direction?, passenger_ids?}` | `checkin:write` |
-| GET | `/api/checkins/{id}` | `bookings:read` (owner / admin) |
-| PUT | `/api/checkins/{id}` `{seat}` or `{status: "NOT_CHECKED_IN"}` (offload → ticket cancelled) | `checkin:write` (owner / admin) |
-| GET | `/api/checkins` | `admin` |
-| GET | `/api/tickets/{id}?last_name=` | `bookings:read`; owner / admin, or a matching last name |
-| GET | `/api/tickets/{id}/boarding-pass?last_name=` | as above; printable HTML |
-| GET / POST / DELETE | `/api/tickets` | `admin` / `tickets:write` |
+| POST | `/api/checkins/validate` `{pnr, last_name}` | For each segment: phase, `checkin_opens_at` / `closes_at`, `open`, `reason`, and each passenger's `eligible`, `reason` and `travels_with` |
+| POST | `/api/checkins` `{pnr, last_name, flight_ids?, passenger_ids?}` | Defaults: every open flight and every passenger not yet checked in |
+| PUT | `/api/checkins/{id}` | Change seat, or offload (the ticket is cancelled) |
+| GET | `/api/tickets/{id}?last_name=` | Boarding pass, including `baggage` and `phase` |
 
-`validate` returns the booking view plus `direction`, `flight_ids` (the segments covered), `can_check_in`,
-`eligible_passenger_ids` and `reasons`.
-
-## Boarding pass fields
-Airline, passenger (`SURNAME/GIVEN`), PNR, ticket number, flight, origin and destination, local date and time,
-boarding time (45 min before departure), gate (TBA), cabin, seat and sequence number.
+## Configuration
+`CHECKIN_OPENS_HOURS` (48), `CHECKIN_CLOSES_MINUTES` (240), `BOARDING_OPENS_MINUTES` (60), `BOARDING_CLOSES_MINUTES` (30).
 
 ## UI
-The Check-in page takes a PNR and last name and shows the booking with the covered segments highlighted. The user
-selects passengers and confirms, then sees the boarding passes with a **Print** button; the print layout hides
-everything else.
+The Check-in page shows one card per flight, with its phase, window and passenger checkboxes. Ticking an adult or
+their infant ticks both. A "Check in N passenger(s) on UD102" button submits the card, and the boarding passes are printable.

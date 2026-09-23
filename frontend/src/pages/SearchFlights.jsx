@@ -6,7 +6,8 @@ import SearchForm, { fromQuery, toQuery } from '../components/SearchForm'
 import Spinner from '../components/Spinner'
 import useAsync from '../hooks/useAsync'
 import { flightService } from '../services/api'
-import { localDate, money } from '../utils/format'
+import { useCurrency } from '../hooks/useCurrency'
+import { localDate } from '../utils/format'
 
 export default function SearchFlights() {
   const navigate = useNavigate()
@@ -15,6 +16,7 @@ export default function SearchFlights() {
   const [results, setResults] = useState(null)
   const [selection, setSelection] = useState({ outbound: null, return: null })
   const { loading, error, run } = useAsync()
+  const { price } = useCurrency()
   const roundTrip = criteria.trip === 'ROUND_TRIP'
 
   // The URL is the source of truth: submitting updates it, and a URL with a date runs the search.
@@ -59,7 +61,7 @@ export default function SearchFlights() {
       <h1 className="text-2xl font-bold">Book a flight</h1>
       <SearchForm initial={criteria} loading={loading} onSubmit={(form) => setParams(toQuery(form))} />
       <p className="text-xs text-slate-500">
-        Direct flights and one-stop connections are shown. Tip: the sample schedule runs DEL → LHR via Dubai on even dates and LHR → DEL on odd dates.
+        Direct flights and one-stop connections are shown, with 3–4 departures a day on every route (morning, afternoon and night). Book up to 2 months ahead.
       </p>
 
       <Alert>{error}</Alert>
@@ -77,7 +79,7 @@ export default function SearchFlights() {
           <div className="mx-auto flex max-w-6xl items-center justify-between px-4">
             <p className="text-sm">
               Trip total for {criteria.adults + criteria.children + criteria.infants} passenger(s):{' '}
-              <span className="text-lg font-bold">{money(total, selection.outbound.currency)}</span>
+              <span className="text-lg font-bold">{price(total)}</span>
             </p>
             <button className="btn-primary" onClick={proceed}>Continue</button>
           </div>

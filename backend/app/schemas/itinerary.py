@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.models.enums import CabinClass, TripType
+from app.schemas.baggage import BaggageAllowance
 from app.schemas.common import AirportBrief
 from app.schemas.flight import FlightSummary
 
@@ -16,6 +17,7 @@ class ItineraryClass(BaseModel):
     party_total: float = Field(description="Total for the searched adults, children and infants")
     currency: str
     available_seats: int = Field(description="Lowest availability across segments")
+    baggage: dict[str, BaggageAllowance] = Field(description="Standard allowance per passenger type (ADULT, CHILD, INFANT)")
 
 
 class Layover(BaseModel):
@@ -27,6 +29,7 @@ class Itinerary(BaseModel):
     itinerary_id: str = Field(examples=["FLT005-FLT002"])
     flight_ids: list[str]
     stops: int
+    domestic: bool = Field(description="True when every segment is domestic (domestic allowances apply)")
     origin: AirportBrief
     destination: AirportBrief
     departure: datetime

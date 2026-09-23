@@ -1,3 +1,5 @@
+import { baggageText } from './Baggage'
+
 export default function BoardingPass({ pass }) {
   return (
     <div className="break-inside-avoid overflow-hidden rounded-xl border-2 border-dashed border-slate-400 bg-white">
@@ -24,6 +26,7 @@ export default function BoardingPass({ pass }) {
             <Field label="Gate" value={pass.gate} />
             <Field label="Cabin" value={pass.cabin_name} />
           </div>
+          <p className="text-xs text-slate-600">🧳 {baggageText(pass.baggage)}</p>
         </div>
         <div className="space-y-4 border-t border-dashed border-slate-300 pt-4 sm:border-l sm:border-t-0 sm:pl-5 sm:pt-0">
           <Field label="Seat" value={<span className="text-3xl">{pass.seat}</span>} />

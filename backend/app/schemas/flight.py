@@ -2,7 +2,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import CabinClass, FlightStatus
+from app.models.enums import CabinClass, FlightPhase, FlightStatus
+from app.schemas.baggage import BaggageAllowance
 from app.schemas.common import AirportBrief
 
 
@@ -29,6 +30,7 @@ class ClassAvailability(BaseModel):
     price: float
     currency: str
     available_seats: int
+    baggage: dict[str, BaggageAllowance]
 
 
 class FlightSummary(BaseModel):
@@ -39,7 +41,9 @@ class FlightSummary(BaseModel):
     departure: datetime
     arrival: datetime
     duration_minutes: int
-    status: FlightStatus
+    status: FlightStatus = Field(description="Operational record status set by operations/admin")
+    phase: FlightPhase = Field(description="Live phase: SCHEDULED → CHECKIN_OPEN → CHECKIN_CLOSED → BOARDING → GATE_CLOSED → DEPARTED → ARRIVED")
+    domestic: bool
     aircraft_model: str
 
 
@@ -51,6 +55,7 @@ class FlightSearchResult(FlightSummary):
 
 
 class FlightSchedule(Flight):
+    phase: FlightPhase
     aircraft_registration: str
     aircraft_model: str
     capacity: int

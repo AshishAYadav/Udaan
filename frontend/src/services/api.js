@@ -75,6 +75,7 @@ export const flightService = {
   schedules: (params) => request('GET', `/flights/schedules${query(params)}`),
   createSchedule: (payload) => request('POST', '/flights/schedules', payload),
   updateSchedule: (flightId, payload) => request('PUT', `/flights/schedules/${flightId}`, payload),
+  generateSchedules: (payload) => request('POST', '/admin/schedules/generate', payload),
   fares: (flightId) => request('GET', `/fares/flight/${flightId}`),
 }
 
@@ -82,13 +83,16 @@ export const passengerService = {
   create: (payload) => request('POST', '/passengers', payload),
 }
 
-// Guests authorise follow-up payment calls with the payment's access_key.
-const paymentKey = (key) => ({ headers: key ? { 'X-Payment-Key': key } : {} })
-
 export const paymentService = {
-  create: (payload) => request('POST', '/payments', payload),
-  decide: (paymentId, action, key) => request('PUT', `/payments/${paymentId}`, { action }, paymentKey(key)),
-  complete: (paymentId, key) => request('POST', `/payments/${paymentId}/complete`, undefined, paymentKey(key)),
+  session: (sessionId) => request('GET', `/payment-sessions/${sessionId}`),
+  pay: (sessionId, card) => request('POST', `/payment-sessions/${sessionId}/pay`, card),
+}
+
+export const policyService = {
+  list: () => request('GET', '/policies'),
+  get: (slug) => request('GET', `/policies/${slug}`),
+  baggage: () => request('GET', '/baggage/allowances'),
+  currencies: () => request('GET', '/currencies'),
 }
 
 export const bookingService = {
@@ -96,6 +100,8 @@ export const bookingService = {
   mine: () => request('GET', '/bookings'),
   byId: (bookingId) => request('GET', `/bookings/${bookingId}`),
   byPnr: (pnr, lastName) => request('GET', `/bookings/pnr/${encodeURIComponent(pnr)}${query({ last_name: lastName })}`),
+  newPaymentLink: (bookingId, lastName, options) =>
+    request('POST', `/bookings/${bookingId}/payment-session${query({ last_name: lastName })}`, options),
   cancel: (bookingId, lastName, reason) =>
     request('POST', `/bookings/${bookingId}/cancel${query({ last_name: lastName })}`, { reason }),
   list: (params = {}) => request('GET', `/bookings${query(params)}`),
@@ -104,8 +110,8 @@ export const bookingService = {
 
 export const checkinService = {
   validate: (pnr, lastName) => request('POST', '/checkins/validate', { pnr, last_name: lastName }),
-  checkIn: (pnr, lastName, passengerIds) =>
-    request('POST', '/checkins', { pnr, last_name: lastName, passenger_ids: passengerIds }),
+  checkIn: (pnr, lastName, flightIds, passengerIds) =>
+    request('POST', '/checkins', { pnr, last_name: lastName, flight_ids: flightIds, passenger_ids: passengerIds }),
 }
 
 export const ticketService = {

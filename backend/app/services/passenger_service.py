@@ -5,7 +5,7 @@ from app.auth.dependencies import Principal
 from app.config import settings
 from app.db.database import next_id
 from app.db.database import repositories as db
-from app.models.enums import ACTIVE_BOOKING_STATUSES, PassengerType
+from app.models.enums import HOLDING_BOOKING_STATUSES, PassengerType
 from app.services import reference_service as ref
 from app.utils.errors import BadRequestError, ConflictError, ForbiddenError, NotFoundError
 from app.utils.timeutils import age_on, now_iso
@@ -50,7 +50,7 @@ def has_last_name(passenger_ids: list[str], last_name: str | None) -> bool:
 
 def active_bookings_for(passenger_id: str) -> list[dict]:
     return db.bookings.filter(
-        lambda b: passenger_id in b["passenger_ids"] and b["status"] in ACTIVE_BOOKING_STATUSES
+        lambda b: passenger_id in b["passenger_ids"] and b["status"] in HOLDING_BOOKING_STATUSES
     )
 
 

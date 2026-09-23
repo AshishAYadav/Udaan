@@ -28,8 +28,14 @@ export default function MyBooking() {
   }, [user])
 
   useEffect(() => {
-    if (pnr && lastName) run(async () => setBooking(await bookingService.byPnr(pnr, lastName)))
-  }, [pnr, lastName, run])
+    if (!pnr || !lastName) return
+    run(async () => {
+      const found = await bookingService.byPnr(pnr, lastName)
+      setBooking(found)
+      // Returning from the hosted payment page (success_url carries paid=1).
+      if (params.get('paid') && found.status === 'CONFIRMED') setNotice(`Payment received — booking ${found.pnr} is confirmed. Have a great trip!`)
+    })
+  }, [pnr, lastName, run]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const search = (newPnr, newLastName) => {
     setBooking(null)
@@ -38,10 +44,11 @@ export default function MyBooking() {
   }
 
   const cancel = () => {
-    if (!window.confirm(`Cancel booking ${booking.pnr}? Seats are released and the payment is refunded.`)) return
+    if (!window.confirm(`Cancel booking ${booking.pnr}? Seats are released and any payment is refunded.`)) return
+    const wasPaid = booking.status !== 'PENDING'
     run(async () => {
       setBooking(await bookingService.cancel(booking.booking_id, passengerLastName, 'Cancelled online'))
-      setNotice('Your booking has been cancelled and a refund has been issued.')
+      setNotice(wasPaid ? 'Your booking has been cancelled and a refund has been issued.' : 'Your seat hold has been released.')
       if (user) setMine(await bookingService.mine())
     })
   }
@@ -58,10 +65,14 @@ export default function MyBooking() {
       {booking && (
         <>
           <BookingView booking={booking} />
-          {ACTIVE.includes(booking.status) && (
+          {[...ACTIVE, 'PENDING'].includes(booking.status) && (
             <div className="flex flex-wrap gap-2">
-              <Link className="btn-primary" to={`/checkin?pnr=${booking.pnr}&last_name=${encodeURIComponent(passengerLastName)}`}>Check in</Link>
-              <button className="btn-danger" disabled={loading} onClick={cancel}>Cancel booking</button>
+              {ACTIVE.includes(booking.status) && (
+                <Link className="btn-primary" to={`/checkin?pnr=${booking.pnr}&last_name=${encodeURIComponent(passengerLastName)}`}>Check in</Link>
+              )}
+              <button className="btn-danger" disabled={loading} onClick={cancel}>
+                {booking.status === 'PENDING' ? 'Cancel hold' : 'Cancel booking'}
+              </button>
             </div>
           )}
         </>

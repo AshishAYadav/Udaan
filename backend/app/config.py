@@ -20,8 +20,9 @@ class Settings:
         for origin in os.getenv("FRONTEND_URL", "http://localhost:5173").split(",")
         if origin.strip()
     ]
+    public_ui_url: str = os.getenv("PUBLIC_UI_URL", "http://localhost:5173").rstrip("/")
     seed_days: int = int(os.getenv("SEED_DAYS", "60"))
-    flights_per_day: int = 5
+    seed_random_seed: int = int(os.getenv("SEED_RANDOM_SEED", "2026"))
 
     airline_code: str = "UD"
     airline_name: str = "Udaan Airlines"
@@ -43,19 +44,24 @@ class Settings:
     max_connection_domestic_hours: int = int(os.getenv("MAX_CONNECTION_DOMESTIC_HOURS", "4"))
     max_connection_international_hours: int = int(os.getenv("MAX_CONNECTION_INTERNATIONAL_HOURS", "24"))
 
-    # Check-in window. checkin_opens_hours = 0 means check-in is open from booking.
-    checkin_opens_hours: int = int(os.getenv("CHECKIN_OPENS_HOURS", "0"))
-    checkin_closes_minutes: int = int(os.getenv("CHECKIN_CLOSES_MINUTES", "60"))
+    # Departure timeline (minutes/hours before departure)
+    checkin_opens_hours: int = int(os.getenv("CHECKIN_OPENS_HOURS", "48"))
+    checkin_closes_minutes: int = int(os.getenv("CHECKIN_CLOSES_MINUTES", "240"))
+    boarding_opens_minutes: int = int(os.getenv("BOARDING_OPENS_MINUTES", "60"))
+    boarding_closes_minutes: int = int(os.getenv("BOARDING_CLOSES_MINUTES", "30"))
+
+    # Bookings are held (seats + PNR) until paid, for this long
+    booking_hold_minutes: int = int(os.getenv("BOOKING_HOLD_MINUTES", "30"))
+    webhook_timeout_seconds: float = 5.0
 
     # Business rules
     change_cutoff_hours: int = 24
-    change_window_days: int = 7
+    change_window_days: int = int(os.getenv("CHANGE_WINDOW_DAYS", "60"))
     max_seats_per_booking: int = 9
     infant_max_age: int = 2
     child_max_age: int = 12
     child_fare_factor: float = 0.75
     infant_fare_factor: float = 0.10
-    boarding_minutes_before_departure: int = 45
 
 
 settings = Settings()

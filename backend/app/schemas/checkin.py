@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import CabinClass, CheckinStatus, Direction
+from app.models.enums import CabinClass, CheckinStatus, Direction, FlightPhase
 from app.schemas.booking import BookingView
 from app.schemas.ticket import BoardingPass
 
@@ -12,23 +12,41 @@ class CheckinLookup(BaseModel):
     last_name: str = Field(min_length=1, examples=["Smith"])
 
 
-class CheckinValidateRequest(CheckinLookup):
-    direction: Direction | None = Field(default=None, description="Journey to check in. Defaults to the next upcoming journey.")
-
-
-class CheckinCreate(CheckinValidateRequest):
-    passenger_ids: list[str] | None = Field(
-        default=None, description="Passengers to check in. Defaults to every eligible passenger."
+class CheckinCreate(CheckinLookup):
+    flight_ids: list[str] | None = Field(
+        default=None, description="Flights (segments) to check in. Default: every flight whose check-in window is open."
     )
+    passenger_ids: list[str] | None = Field(
+        default=None, description="Passengers to check in. Default: everyone not yet checked in on those flights."
+    )
+
+
+class SegmentCheckinPassenger(BaseModel):
+    passenger_id: str
+    checked_in: bool
+    eligible: bool
+    reason: str | None = None
+    travels_with: str | None = Field(default=None, description="Infant/adult partner who must check in together")
+
+
+class SegmentCheckinStatus(BaseModel):
+    segment_no: int
+    direction: Direction
+    flight_id: str
+    flight_number: str
+    phase: FlightPhase
+    checkin_opens_at: datetime
+    checkin_closes_at: datetime
+    open: bool
+    reason: str | None = None
+    passengers: list[SegmentCheckinPassenger]
 
 
 class CheckinValidation(BaseModel):
     booking: BookingView
-    direction: Direction | None
-    flight_ids: list[str] = Field(description="Remaining segments of the journey that check-in covers")
+    segments: list[SegmentCheckinStatus]
     can_check_in: bool
-    eligible_passenger_ids: list[str]
-    reasons: list[str] = Field(description="Why some or all passengers cannot check in")
+    reasons: list[str] = Field(description="Why some flights cannot be checked in now")
 
 
 class CheckinUpdate(BaseModel):
@@ -56,6 +74,5 @@ class Checkin(BaseModel):
 class CheckinResult(BaseModel):
     booking_id: str
     pnr: str
-    direction: Direction | None
     checkins: list[Checkin]
     boarding_passes: list[BoardingPass]

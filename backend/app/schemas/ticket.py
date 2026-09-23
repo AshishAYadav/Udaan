@@ -2,7 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import CabinClass, PassengerType, TicketStatus
+from app.models.enums import CabinClass, FlightPhase, PassengerType, TicketStatus
+from app.schemas.baggage import BaggageAllowance
 from app.schemas.common import AirportBrief
 
 
@@ -46,3 +47,5 @@ class BoardingPass(BaseModel):
     cabin_name: str
     seat: str
     sequence_number: int
+    phase: FlightPhase
+    baggage: BaggageAllowance
